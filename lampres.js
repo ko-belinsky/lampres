@@ -1,62 +1,91 @@
 (function() {
     'use strict';
-    if (window.continue_series_fixed) return;
-    window.continue_series_fixed = true;
+    if (window.continue_series_v2) return;
+    window.continue_series_v2 = true;
 
-    console.log('ContinueSeries: Скрипт запущен (исправленная версия)');
+    const STORAGE_KEY = 'continue_series_data_v2';
+    console.log('ContinueSeries: Скрипт запущен (версия 2)');
 
-    // Регистрируем манифест с ПРАВИЛЬНЫМИ полями name и description
-    Lampa.Manifest.plugins = {
-        type: 'video',
-        version: '1.0.0',
-        name: 'Продолжить просмотр',
-        description: 'Запуск сериала с последней позиции',
-        onContextMenu: function(card) {
-            console.log('ContinueSeries: onContextMenu для', card.name || card.title, 'тип:', card.media_type);
-            // Показываем пункт только для сериалов
-            if (card.media_type !== 'tv') return null;
-            return {
-                name: 'Продолжить просмотр', // ← Правильное поле
-                description: 'Запустить с последней позиции' // ← Правильное поле
-            };
-        },
-        onContextLauch: function(card) {
-            console.log('ContinueSeries: Пункт выбран для', card.name || card.title);
-            Lampa.Noty.show('Тестовый запуск для: ' + (card.name || card.title));
-            // Здесь позже будет реальная логика запуска торрента
-        }
-    };
+    // --- 1. Сохранение данных при старте торрент-плеера ---
+    function setupPlayerListener() {
+        if (!Lampa.Player || !Lampa.Player.listener) return;
 
-    // Слушаем старт плеера, чтобы сохранять данные о торренте
-    function setupListener() {
-        if (!Lampa.Player || !Lampa.Player.listener) {
-            console.error('ContinueSeries: Lampa.Player.listener не доступен');
-            return;
-        }
         Lampa.Player.listener.follow('start', function(data) {
-            console.log('ContinueSeries: Событие start', data);
-            if (data.torrent_hash && data.movie) {
-                console.log('ContinueSeries: Торрент обнаружен. Хэш:', data.torrent_hash);
-                const cardId = data.movie.id;
-                if (cardId) {
-                    const store = JSON.parse(localStorage.getItem('continue_series_data') || '{}');
-                    store[cardId] = {
-                        torrent_hash: data.torrent_hash,
-                        file_index: data.id,
-                        position: 0,
-                        title: data.movie.name || data.movie.title
-                    };
-                    localStorage.setItem('continue_series_data', JSON.stringify(store));
-                    console.log('ContinueSeries: Данные сохранены для TMDB ID', cardId);
-                }
-            }
+            // Нас интересуют только торренты и только сериалы
+            if (!data.torrent_hash || !data.movie || data.movie.media_type !== 'tv') return;
+
+            const cardId = data.movie.id;
+            if (!cardId) return;
+
+            console.log('ContinueSeries: Сохранение контекста для TMDB ID', cardId);
+            const store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            
+            // Сохраняем хэш и индекс файла. Позиция будет обновляться позже.
+            store[cardId] = {
+                torrent_hash: data.torrent_hash,
+                file_index: data.id,
+                position: 0, // Позиция будет уточнена в плеере
+                title: data.movie.name || data.movie.title
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
         });
     }
 
+    // --- 2. Добавление кнопки в карточку сериала ---
+    function addButtonToCard(e) {
+        if (e.type !== 'complete' || !e.movie || e.movie.media_type !== 'tv') return;
+
+        const card = e.movie;
+        const cardId = card.id;
+        if (!cardId) return;
+
+        // Проверяем, есть ли сохранённые данные для этого сериала
+        const store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        const saved = store[cardId];
+        if (!saved) return; // Нет данных — нет кнопки
+
+        // Ищем контейнер для кнопок в карточке
+        const buttonsContainer = e.object.activity.render().find('.full-start-new__buttons');
+        if (!buttonsContainer.length) return;
+
+        // Если кнопка уже добавлена — выходим
+        if (buttonsContainer.find('.button--continue').length) return;
+
+        // Создаём HTML кнопки в стиле Lampa
+        const buttonHtml = `
+            <div class="full-start__button selector button--continue">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M8 5v14l11-7z"/>
+                </svg>
+                <span>Продолжить</span>
+            </div>
+        `;
+
+        const $button = $(buttonHtml);
+
+        // Обработчик нажатия на кнопку
+        $button.on('hover:enter', function() {
+            console.log('ContinueSeries: Запуск с позиции', saved.position);
+            // Показываем уведомление (позже здесь будет реальный запуск)
+            Lampa.Noty.show('Запуск: ' + saved.title + ' (файл ' + saved.file_index + ')');
+            
+            // --- Логика реального запуска (пока закомментирована) ---
+            // Lampa.Torrent.open(saved.torrent_hash, card);
+            // После открытия торрента нужно выбрать файл по индексу `saved.file_index`.
+            // Это можно сделать через слушатель события 'torrent_file'.
+        });
+
+        // Добавляем кнопку в начало панели (или в конец, по вкусу)
+        buttonsContainer.prepend($button);
+        console.log('ContinueSeries: Кнопка добавлена для', card.name);
+    }
+
+    // --- 3. Инициализация ---
     function init() {
-        console.log('ContinueSeries: init() вызван, appready =', window.appready);
-        setupListener();
-        console.log('ContinueSeries: Плагин успешно инициализирован');
+        setupPlayerListener();
+        // Слушаем событие полной загрузки карточки
+        Lampa.Listener.follow('full', addButtonToCard);
+        console.log('ContinueSeries: Плагин инициализирован (v2)');
     }
 
     if (window.appready) {
