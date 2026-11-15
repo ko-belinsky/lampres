@@ -1,98 +1,50 @@
 (function() {
     'use strict';
-    if (window.continue_series_v2) return;
-    window.continue_series_v2 = true;
+    if (window.continue_diag) return;
+    window.continue_diag = true;
 
-    const STORAGE_KEY = 'continue_series_data_v2';
-    console.log('ContinueSeries: Скрипт запущен (версия 2)');
+    console.log('DIAG: Плагин запущен');
 
-    // --- 1. Сохранение данных при старте торрент-плеера ---
-    function setupPlayerListener() {
-        if (!Lampa.Player || !Lampa.Player.listener) return;
-
-        Lampa.Player.listener.follow('start', function(data) {
-            // Нас интересуют только торренты и только сериалы
-            if (!data.torrent_hash || !data.movie || data.movie.media_type !== 'tv') return;
-
-            const cardId = data.movie.id;
-            if (!cardId) return;
-
-            console.log('ContinueSeries: Сохранение контекста для TMDB ID', cardId);
-            const store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-            
-            // Сохраняем хэш и индекс файла. Позиция будет обновляться позже.
-            store[cardId] = {
-                torrent_hash: data.torrent_hash,
-                file_index: data.id,
-                position: 0, // Позиция будет уточнена в плеере
-                title: data.movie.name || data.movie.title
-            };
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-        });
-    }
-
-    // --- 2. Добавление кнопки в карточку сериала ---
-    function addButtonToCard(e) {
-        if (e.type !== 'complete' || !e.movie || e.movie.media_type !== 'tv') return;
+    // 1. Слушаем событие карточки (тип 'complite'!)
+    Lampa.Listener.follow('full', function(e) {
+        console.log('DIAG: Событие full, тип:', e.type, 'movie:', e.movie ? e.movie.title : 'нет');
+        if (e.type !== 'complite') return;
 
         const card = e.movie;
-        const cardId = card.id;
-        if (!cardId) return;
+        if (!card) return;
 
-        // Проверяем, есть ли сохранённые данные для этого сериала
-        const store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-        const saved = store[cardId];
-        if (!saved) return; // Нет данных — нет кнопки
+        // Временно показываем кнопку для ВСЕХ карточек, чтобы проверить вставку
+        const $container = e.object.activity.render().find('.full-start-new__buttons');
+        console.log('DIAG: Контейнер кнопок найден?', $container.length > 0);
 
-        // Ищем контейнер для кнопок в карточке
-        const buttonsContainer = e.object.activity.render().find('.full-start-new__buttons');
-        if (!buttonsContainer.length) return;
+        if (!$container.length) return;
+        if ($container.find('.button--diag').length) return; // уже добавлена
 
-        // Если кнопка уже добавлена — выходим
-        if (buttonsContainer.find('.button--continue').length) return;
-
-        // Создаём HTML кнопки в стиле Lampa
-        const buttonHtml = `
-            <div class="full-start__button selector button--continue">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 5v14l11-7z"/>
-                </svg>
-                <span>Продолжить</span>
+        const $btn = $(`
+            <div class="full-start__button selector button--diag">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                <span>ДИАГ: Продолжить</span>
             </div>
-        `;
+        `);
 
-        const $button = $(buttonHtml);
-
-        // Обработчик нажатия на кнопку
-        $button.on('hover:enter', function() {
-            console.log('ContinueSeries: Запуск с позиции', saved.position);
-            // Показываем уведомление (позже здесь будет реальный запуск)
-            Lampa.Noty.show('Запуск: ' + saved.title + ' (файл ' + saved.file_index + ')');
-            
-            // --- Логика реального запуска (пока закомментирована) ---
-            // Lampa.Torrent.open(saved.torrent_hash, card);
-            // После открытия торрента нужно выбрать файл по индексу `saved.file_index`.
-            // Это можно сделать через слушатель события 'torrent_file'.
+        $btn.on('hover:enter', function() {
+            Lampa.Noty.show('DIAG: Кнопка работает! Карточка: ' + card.title);
         });
 
-        // Добавляем кнопку в начало панели (или в конец, по вкусу)
-        buttonsContainer.prepend($button);
-        console.log('ContinueSeries: Кнопка добавлена для', card.name);
-    }
+        $container.prepend($btn);
+        console.log('DIAG: Тестовая кнопка добавлена для', card.title);
+    });
 
-    // --- 3. Инициализация ---
-    function init() {
-        setupPlayerListener();
-        // Слушаем событие полной загрузки карточки
-        Lampa.Listener.follow('full', addButtonToCard);
-        console.log('ContinueSeries: Плагин инициализирован (v2)');
-    }
+    // 2. Слушаем старт плеера и выводим ключи, чтобы понять, есть ли данные
+    Lampa.Player.listener.follow('start', function(data) {
+        console.log('DIAG: Player.start. Ключи data:', Object.keys(data));
+        if (data.torrent_hash) {
+            console.log('DIAG: Torrent hash:', data.torrent_hash, 'File id:', data.id);
+        }
+        if (data.movie) {
+            console.log('DIAG: Movie object:', data.movie.title, 'media_type:', data.movie.media_type);
+        }
+    });
 
-    if (window.appready) {
-        init();
-    } else {
-        Lampa.Listener.follow('app', function(e) {
-            if (e.type === 'ready') init();
-        });
-    }
+    console.log('DIAG: Слушатели установлены');
 })();
