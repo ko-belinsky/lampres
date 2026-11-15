@@ -1,77 +1,68 @@
 (function() {
     'use strict';
-    if (window.continue_series_final) return;
-    window.continue_series_final = true;
+    if (window.continue_series_v4) return;
+    window.continue_series_v4 = true;
 
-    const STORAGE_KEY = 'continue_series_data_final';
+    const STORAGE_KEY = 'continue_series_v4';
 
-    // --- 1. Сохранение данных при старте торрент-плеера ---
-    function setupPlayerListener() {
-        Lampa.Player.listener.follow('start', function(data) {
-            // Нас интересуют только торренты и только сериалы
-            if (!data.torrent_hash || !data.movie || data.movie.media_type !== 'tv') return;
+    // --- 1. Добавление кнопки в карточку ---
+    Lampa.Listener.follow('full', function(e) {
+        if (e.type !== 'complite') return;      // тип именно 'complite' — из cardify
+        var card = e.data;                       // ← ИСПРАВЛЕНО: e.data, не e.movie
+        if (!card) return;
 
-            const cardId = data.movie.id;
-            if (!cardId) return;
-
-            const store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-            store[cardId] = {
-                torrent_hash: data.torrent_hash,
-                file_index: data.id, // Индекс файла (серии)
-                position: 0, // Позиция будет обновляться в плеере
-                title: data.movie.name || data.movie.title
-            };
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
-        });
-    }
-
-    // --- 2. Добавление кнопки в карточку сериала ---
-    function addButtonToCard(e) {
-        // Ждём именно событие 'complite' — полной загрузки карточки
-        if (e.type !== 'complite' || !e.movie || e.movie.media_type !== 'tv') return;
-
-        const card = e.movie;
-        const cardId = card.id;
-        if (!cardId) return;
-
-        // Проверяем, есть ли сохранённые данные для этого сериала
-        const store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-        const saved = store[cardId];
-        if (!saved) return; // Нет данных — нет кнопки
-
-        const $container = e.object.activity.render().find('.full-start-new__buttons');
+        // Показываем кнопку для всех типов карточек — для проверки
+        var $container = e.object.activity.render().find('.full-start-new__buttons');
+        if (!$container.length) {
+            $container = e.object.activity.render().find('.buttons--container');
+        }
         if (!$container.length) return;
-        if ($container.find('.button--continue').length) return; // Уже добавлена
+        if ($container.find('.button--continue-v4').length) return;
 
-        const $btn = $(`
-            <div class="full-start__button selector button--continue">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M8 5v14l11-7z"/>
-                </svg>
-                <span>Продолжить</span>
-            </div>
-        `);
+        var $btn = $(
+            '<div class="full-start__button selector button--continue-v4">' +
+                '<svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
+                '<span>Продолжить</span>' +
+            '</div>'
+        );
 
         $btn.on('hover:enter', function() {
-            // Мгновенный запуск: открываем торрент по хэшу, минуя поиск
-            Lampa.Torrent.open(saved.torrent_hash, card);
-            Lampa.Noty.show('Запуск: ' + saved.title + ' (серия ' + (saved.file_index + 1) + ')');
+            var store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            var saved = store[card.id];
+            if (saved && saved.torrent_hash) {
+                Lampa.Torrent.open(saved.torrent_hash, card);
+                Lampa.Noty.show('Запуск: ' + saved.title);
+            } else {
+                Lampa.Noty.show('Нет сохранённой раздачи для: ' + (card.name || card.title));
+            }
         });
 
         $container.prepend($btn);
+    });
+
+    // --- 2. Сохранение контекста при старте торрента ---
+    function saveTorrent(data) {
+        if (!data || !data.torrent_hash) return;
+        var movie = data.movie || data.data;
+        if (!movie) return;
+        var cardId = movie.id;
+        if (!cardId) return;
+        var store = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+        store[cardId] = {
+            torrent_hash: data.torrent_hash,
+            file_index: data.id,
+            title: movie.name || movie.title
+        };
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
     }
 
-    // --- 3. Инициализация ---
-    function init() {
-        setupPlayerListener();
-        Lampa.Listener.follow('full', addButtonToCard); // Подписываемся на событие карточки
-    }
+    try {
+        if (Lampa.Player && Lampa.Player.listener) {
+            Lampa.Player.listener.follow('start', saveTorrent);
+        }
+    } catch (e) {}
+    try {
+        Lampa.Listener.follow('player', saveTorrent);
+    } catch (e) {}
 
-    if (window.appready) {
-        init();
-    } else {
-        Lampa.Listener.follow('app', function(e) {
-            if (e.type === 'ready') init();
-        });
-    }
 })();
