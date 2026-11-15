@@ -1,30 +1,33 @@
 (function() {
     'use strict';
-    if (window.continue_series_debug) return;
-    window.continue_series_debug = true;
+    if (window.continue_series_fixed) return;
+    window.continue_series_fixed = true;
 
-    console.log('ContinueSeries: Скрипт начал выполняться');
+    console.log('ContinueSeries: Скрипт запущен (исправленная версия)');
 
-    // Регистрируем манифест как можно раньше
+    // Регистрируем манифест с ПРАВИЛЬНЫМИ полями name и description
     Lampa.Manifest.plugins = {
         type: 'video',
+        version: '1.0.0',
+        name: 'Продолжить просмотр',
+        description: 'Запуск сериала с последней позиции',
         onContextMenu: function(card) {
-            console.log('ContinueSeries: onContextMenu вызван для', card.name || card.title, 'media_type:', card.media_type);
-            // ВРЕМЕННО показываем пункт для всех сериалов
+            console.log('ContinueSeries: onContextMenu для', card.name || card.title, 'тип:', card.media_type);
+            // Показываем пункт только для сериалов
             if (card.media_type !== 'tv') return null;
             return {
-                title: 'Продолжить просмотр (тест)',
-                icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
+                name: 'Продолжить просмотр', // ← Правильное поле
+                description: 'Запустить с последней позиции' // ← Правильное поле
             };
         },
         onContextLauch: function(card) {
-            console.log('ContinueSeries: Пункт меню выбран для', card.name || card.title);
+            console.log('ContinueSeries: Пункт выбран для', card.name || card.title);
             Lampa.Noty.show('Тестовый запуск для: ' + (card.name || card.title));
-            // Здесь позже будет реальный запуск
+            // Здесь позже будет реальная логика запуска торрента
         }
     };
 
-    // Слушаем старт плеера, чтобы сохранять данные (пока просто логируем)
+    // Слушаем старт плеера, чтобы сохранять данные о торренте
     function setupListener() {
         if (!Lampa.Player || !Lampa.Player.listener) {
             console.error('ContinueSeries: Lampa.Player.listener не доступен');
@@ -33,8 +36,7 @@
         Lampa.Player.listener.follow('start', function(data) {
             console.log('ContinueSeries: Событие start', data);
             if (data.torrent_hash && data.movie) {
-                console.log('ContinueSeries: Обнаружен торрент. Хэш:', data.torrent_hash, 'Файл:', data.id);
-                // Сохраняем простую заглушку, чтобы проверить работу
+                console.log('ContinueSeries: Торрент обнаружен. Хэш:', data.torrent_hash);
                 const cardId = data.movie.id;
                 if (cardId) {
                     const store = JSON.parse(localStorage.getItem('continue_series_data') || '{}');
@@ -45,17 +47,16 @@
                         title: data.movie.name || data.movie.title
                     };
                     localStorage.setItem('continue_series_data', JSON.stringify(store));
-                    console.log('ContinueSeries: Данные сохранены для cardId', cardId);
+                    console.log('ContinueSeries: Данные сохранены для TMDB ID', cardId);
                 }
             }
         });
     }
 
-    // Инициализация
     function init() {
         console.log('ContinueSeries: init() вызван, appready =', window.appready);
         setupListener();
-        console.log('ContinueSeries: Плагин успешно инициализирован (режим отладки)');
+        console.log('ContinueSeries: Плагин успешно инициализирован');
     }
 
     if (window.appready) {
