@@ -1,16 +1,22 @@
 (function () {
     'use strict';
-    if (window.cs_v21) return;
-    window.cs_v21 = true;
+    if (window.cs_v22) return;
+    window.cs_v22 = true;
 
-    const KEY = 'cs_v21_store';
+    const KEY = 'cs_v22_store';
     let lastArg = null;
     let lastMovieId = null;
 
-    function L(m) { console.log('CS21 ' + m); }
+    // Отдельная группа в консоли Lampa
+    function L() {
+        var args = Array.prototype.slice.call(arguments);
+        args.unshift('CS22');
+        console.log.apply(console, args);
+    }
+
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); }
-        catch(e) { L('save err '+e.message); }
+        catch(e) { L('save err', e.message); }
     }
     function get(id) {
         try { return JSON.parse(localStorage.getItem(KEY)||'{}')[String(id)]||null; } catch(e) { return null; }
@@ -18,8 +24,8 @@
     function isSeries(m) { return m && (m.number_of_seasons > 0 || !!m.first_air_date || (m.name && !m.title)); }
     function currentMovie() { try { const a = Lampa.Activity.active(); return a && (a.movie || a.card || a.card_data); } catch(e) { return null; } }
 
-    // === 1. Хук Player.play: сохраняем ВСЕ поля + movieId ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v21) {
+    // === 1. Хук Player.play ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v22) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -39,54 +45,56 @@
                         L('PLAY saved id=' + movie.id);
                     }
                 }
-            } catch(e) { L('hook err '+e.message); }
+            } catch(e) { L('hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v21 = true;
+        Lampa.Player.__hooked_v22 = true;
         L('HOOKED');
     }
 
-    // === 2. Функция поиска времени в хранилище timecodes ===
-    function findTimeInStorage(movieId, torrentHash, indexPath) {
-        try {
-            // Пробуем разные ключи хранилища, где Lampa может держать таймкоды
-            const keys = ['timecodes', 'file_view', 'timeline'];
-            for (const storeKey of keys) {
-                let store = null;
-                try { store = Lampa.Storage.get(storeKey); } catch(e) {}
-                if (!store || typeof store !== 'object') continue;
-
-                L('check store "' + storeKey + '" items=' + Object.keys(store).length);
-
-                // Перебираем все записи
-                for (const k in store) {
-                    const v = store[k];
-                    if (!v || typeof v !== 'object') continue;
-
-                    // Совпадение по ID карточки
-                    if (v.card_id == movieId || v.movie_id == movieId || v.tmdb_id == movieId) {
-                        if (v.time > 1) {
-                            L('FOUND by card_id in ' + storeKey + ' time=' + Math.round(v.time));
-                            return v.time;
-                        }
+    // === 2. Поиск времени напрямую в localStorage ===
+    function findTimeInLocalStorage(movieId, torrentHash, filePath) {
+        const candidates = [];
+        // Собираем все ключи localStorage, которые могут содержать таймкоды
+        for (let i = 0; i < localStorage.length; i++) {
+            const k = localStorage.key(i);
+            if (!k) continue;
+            if (k.indexOf('file_view') === 0 ||
+                k.indexOf('timecode') === 0 ||
+                k.indexOf('timeline') === 0 ||
+                k.indexOf('view') === 0) {
+                try {
+                    const raw = localStorage.getItem(k);
+                    const obj = JSON.parse(raw);
+                    if (obj && typeof obj === 'object') {
+                        candidates.push({ key: k, data: obj });
                     }
-                    // Совпадение по хэшу торрента (ключ или поле)
-                    if (torrentHash && (String(k).indexOf(torrentHash) >= 0 || (v.hash && String(v.hash).indexOf(torrentHash) >= 0))) {
-                        if (v.time > 1) {
-                            L('FOUND by torrent_hash in ' + storeKey + ' time=' + Math.round(v.time));
-                            return v.time;
-                        }
-                    }
-                    // Совпадение по пути файла
-                    if (indexPath && (v.path == indexPath || String(k).indexOf(indexPath) >= 0)) {
-                        if (v.time > 1) {
-                            L('FOUND by path in ' + storeKey + ' time=' + Math.round(v.time));
-                            return v.time;
-                        }
-                    }
+                } catch(e) {}
+            }
+        }
+
+        L('found storage keys:', candidates.map(c => c.key + '(' + Object.keys(c.data).length + ')').join(', '));
+
+        for (const store of candidates) {
+            for (const id in store.data) {
+                const v = store.data[id];
+                if (!v || typeof v !== 'object') continue;
+
+                // Совпадение по ID карточки
+                if (v.card_id == movieId || v.movie_id == movieId || v.tmdb_id == movieId) {
+                    if (v.time > 1) { L('FOUND by card_id in', store.key, 'time', Math.round(v.time)); return v.time; }
+                }
+                // Совпадение по хэшу торрента
+                if (torrentHash && (String(id).indexOf(torrentHash) >= 0 || (v.hash && String(v.hash).indexOf(torrentHash) >= 0))) {
+                    if (v.time > 1) { L('FOUND by hash in', store.key, 'time', Math.round(v.time)); return v.time; }
+                }
+                // Совпадение по пути файла
+                if (filePath && (v.path == filePath || String(id).indexOf(filePath) >= 0)) {
+                    if (v.time > 1) { L('FOUND by path in', store.key, 'time', Math.round(v.time)); return v.time; }
                 }
             }
-        } catch(e) { L('findTime err '+e.message); }
+        }
+        L('NOT FOUND in localStorage');
         return 0;
     }
 
@@ -105,14 +113,12 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN click id=' + movie.id + ' data=' + (d ? 'yes' : 'no'));
+            L('BTN click id=' + movie.id, 'data=' + (d ? 'yes' : 'no'));
             if (!d || !d.url) return;
 
-            // Ищем время в хранилище Lampa
-            const resumeTime = findTimeInStorage(movie.id, d.torrent_hash, d.path);
+            const resumeTime = findTimeInLocalStorage(movie.id, d.torrent_hash, d.path);
             L('BTN resumeTime=' + Math.round(resumeTime));
 
-            // Восстанавливаем аргумент запуска
             let playArg;
             if (lastArg && lastArg.card && lastArg.card.id === movie.id) {
                 playArg = lastArg; L('using lastArg');
@@ -125,7 +131,6 @@
 
             Lampa.Player.play(playArg);
 
-            // Перематываем родным API Lampa
             if (resumeTime > 1) {
                 setTimeout(function () {
                     try {
@@ -136,13 +141,13 @@
                             Lampa.PlayerVideo.rewind(resumeTime);
                             L('PV.rewind(' + Math.round(resumeTime) + ')');
                         } else {
-                            L('no to/rewind');
+                            L('no to/rewind methods');
                         }
-                    } catch(e) { L('seek err '+e.message); }
+                    } catch(e) { L('seek err', e.message); }
                 }, 3000);
             }
         });
     });
 
-    L('v21 loaded');
+    L('v22 loaded');
 })();
