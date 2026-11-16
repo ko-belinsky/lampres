@@ -1,18 +1,15 @@
 (function () {
     'use strict';
-    if (window.cs_v26) return;
-    window.cs_v26 = true;
+    if (window.cs_v27) return;
+    window.cs_v27 = true;
 
-    const KEY = 'cs_v26_store';
+    const KEY = 'cs_v27_store';
     let lastMovieId = null;
     let pendingResume = null;
+    let overrideUsed = false;
     let lastFvSnapshot = {};
 
-    function L() {
-        var args = Array.prototype.slice.call(arguments);
-        args.unshift('CS26');
-        console.log.apply(console, args);
-    }
+    function L() { console.log.apply(console, ['CS27'].concat([].slice.call(arguments))); }
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) {}
     }
@@ -30,8 +27,7 @@
         return 'file_view';
     }
 
-    // === 1. Hook Player.play — сбрасываем снимок при старте ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v26) {
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v27) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -50,17 +46,16 @@
                         prim.__timelineHash = ex.__timelineHash || null;
                         save(movie.id, prim);
                         try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
-                        L('PLAY id=' + movie.id + ' snapshot=' + Object.keys(lastFvSnapshot).length);
+                        L('PLAY id=' + movie.id);
                     }
                 }
             } catch(e) { L('hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v26 = true;
+        Lampa.Player.__hooked_v27 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Опрос file_view — ловим изменения ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -73,7 +68,7 @@
                 const prevTime = prev ? (prev.time || 0) : -1;
                 if (Math.abs(prevTime - v.time) > 1) {
                     if (!best || v.time > (best.time || 0)) {
-                        best = { hash, time: v.time, duration: v.duration, percent: v.percent };
+                        best = { hash, time: v.time, duration: v.duration };
                     }
                 }
             }
@@ -84,30 +79,29 @@
                     d.__time = best.time;
                     d.__duration = best.duration || d.__duration || 0;
                     save(lastMovieId, d);
-                    L('FV hash=' + best.hash.slice(0,10) + ' time=' + Math.round(best.time) + ' id=' + lastMovieId);
+                    L('FV hash=' + best.hash.slice(0,10) + ' time=' + Math.round(best.time));
                 }
             }
             lastFvSnapshot = store;
         } catch(e) {}
     }, 2000);
 
-    // === 3. Hook Timeline.view — переопределяем ответ ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v26_view) {
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v27_view) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
             try { result = origView.apply(this, arguments); } catch(e) { result = null; }
             if (pendingResume && pendingResume.time > 1) {
-                L('TV hash=' + String(hash||'').slice(0,10) + ' OVERRIDE -> ' + Math.round(pendingResume.time));
+                overrideUsed = true;
+                L('TV OVERRIDE -> ' + Math.round(pendingResume.time));
                 return { time: pendingResume.time, duration: pendingResume.duration || (pendingResume.time + 3000), percent: 0 };
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v26_view = true;
+        Lampa.Timeline.__hooked_v27_view = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 4. Кнопка «Продолжить» ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
@@ -122,34 +116,35 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN click id=' + movie.id + ' data=' + (d ? 'time=' + Math.round(d.__time||0) + ' hash=' + (d.__timelineHash||'none').slice(0,10) : 'no'));
+            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no'));
             if (!d || !d.url) return;
 
             const resumeTime = d.__time || 0;
+            overrideUsed = false;
+
             if (resumeTime > 1) {
                 pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
-                L('BTN pendingResume SET ' + Math.round(resumeTime));
+                L('pendingResume SET ' + Math.round(resumeTime));
                 setTimeout(function () {
                     if (pendingResume && pendingResume.movieId === movie.id) {
                         pendingResume = null;
-                        L('BTN pendingResume TIMEOUT');
+                        L('pendingResume TIMEOUT (used=' + overrideUsed + ')');
                     }
-                }, 30000);
+                }, 20000);
             }
 
             const playArg = {};
             for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
             playArg.card = movie;
             playArg.movie = movie;
-            L('BTN play');
             Lampa.Player.play(playArg);
 
-            // Дополнительно — пробуем PV.to через 5 секунд
             if (resumeTime > 1) {
                 setTimeout(function () {
+                    if (overrideUsed) { L('skip PV.to (override worked)'); return; }
                     try {
                         if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
-                            L('BTN PV.to(' + Math.round(resumeTime) + ')');
+                            L('PV.to(' + Math.round(resumeTime) + ') fallback');
                             Lampa.PlayerVideo.to(resumeTime);
                         }
                     } catch(e) { L('PV.to err', e.message); }
@@ -158,5 +153,5 @@
         });
     });
 
-    L('v26 loaded');
+    L('v27 loaded');
 })();
