@@ -1,185 +1,109 @@
 (function () {
     'use strict';
-    if (window.cs_v5) return;
-    window.cs_v5 = true;
+    if (window.cs_v7) return;
+    window.cs_v7 = true;
 
-    const STORAGE_KEY = 'continue_series_data';
+    const STORAGE_KEY = 'continue_series_v7';
+    const log = (m, tv) => { console.log('CS v7:', m); if (tv) try { Lampa.Noty.show('CS: ' + m); } catch(e){} };
 
-    // Показывает сообщение на экране ТВ И пишет в консоль
-    function log(msg, showOnTV) {
-        console.log('CS v5:', msg);
-        if (showOnTV) {
-            try { Lampa.Noty.show('CS: ' + msg); } catch (e) {}
-        }
+    const save = (id, d) => { try { const a = JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'); a[id]=d; localStorage.setItem(STORAGE_KEY, JSON.stringify(a)); } catch(e){} };
+    const get  = (id) => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')[id]||null; } catch(e){ return null; } };
+
+    // Определение сериала — по нескольким признакам, как в MyShows
+    function isSeries(movie, activity) {
+        if (!movie) return false;
+        if (movie.number_of_seasons > 0) return true;
+        if (movie.first_air_date) return true;
+        if (activity && activity.method === 'tv') return true;
+        if (movie.name && !movie.title) return true;
+        return false;
     }
 
-    function saveData(cardId, data) {
-        try {
-            const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-            all[cardId] = data;
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
-        } catch (e) { log('save error: ' + e.message, true); }
-    }
+    // === Сохранение при старте плеера ===
+    Lampa.Player.listener.follow('start', function (data) {
+        const movie = data.card || (Lampa.Activity.active() && Lampa.Activity.active().movie);
+        if (!movie || !movie.id || !isSeries(movie)) return;
 
-    function getData(cardId) {
-        try {
-            return JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')[cardId] || null;
-        } catch (e) { return null; }
-    }
-
-    // Пытаемся вытащить хэш торрента и индекс файла из URL TorrServer
-    function parseTorrentUrl(url) {
-        if (!url || typeof url !== 'string') return null;
-        const linkMatch = url.match(/[?&]link=([^&]+)/i);
-        const indexMatch = url.match(/[?&]index=(\d+)/i);
-        if (linkMatch) {
-            return { hash: linkMatch[1], index: indexMatch ? parseInt(indexMatch[1]) : 0 };
+        // Ищем торрент-инфу в нескольких местах
+        let hash = data.torrent_hash || null;
+        let index = data.file_index ?? data.index ?? 0;
+        if (!hash && data.url) {
+            const m = data.url.match(/[?&]link=([^&]+)/i);
+            const i = data.url.match(/[?&]index=(\d+)/i);
+            if (m) hash = m[1];
+            if (i) index = parseInt(i[1]);
         }
-        return null;
-    }
+        if (!hash) { log('нет torrent_hash в событии плеера', true); return; }
 
-    // Пытаемся вытащить информацию о фильме, URL и хэш из разных структур события
-    function extractInfo(data) {
-        let movie = null, url = null, hash = null, index = 0;
-        if (!data) return { movie, url, hash, index };
+        // Timeline hash — Lampa сама его генерирует, часто = data.hash
+        const timeline_hash = data.hash || data.timeline_hash || null;
 
-        if (data.movie && typeof data.movie === 'object') movie = data.movie;
-        else if (data.card && typeof data.card === 'object') movie = data.card;
-        else if (data.id && (data.title || data.name)) movie = data;
-
-        if (data.url) url = data.url;
-        else if (data.movie && data.movie.url) url = data.movie.url;
-        else if (data.card && data.card.url) url = data.card.url;
-
-        if (data.torrent_hash) hash = data.torrent_hash;
-        else if (data.hash) hash = data.hash;
-
-        if (data.file_index !== undefined) index = data.file_index;
-        else if (data.id && typeof data.id === 'number' && hash) index = data.id;
-
-        if (!hash && url) {
-            const parsed = parseTorrentUrl(url);
-            if (parsed) { hash = parsed.hash; index = parsed.index; }
-        }
-
-        return { movie, url, hash, index };
-    }
-
-    // ===== Сохранение прогресса при старте плеера =====
-    function onPlayerStart(data) {
-        const info = extractInfo(data);
-        log('player event: hash=' + (info.hash ? info.hash.slice(0,8) + '…' : 'нет') +
-            ', movieId=' + (info.movie && info.movie.id), false);
-
-        if (!info.hash) {
-            log('НЕ НАЙДЕН хэш торрента в событии', true);
-            return;
-        }
-        if (!info.movie || !info.movie.id) {
-            log('НЕ НАЙДЕН ID фильма в событии', true);
-            return;
-        }
-
-        const cardId = info.movie.id;
-        const saved = {
-            torrent_hash: info.hash,
-            file_index: info.index || 0,
-            position: 0,
-            title: info.movie.name || info.movie.title,
-            url: info.url
-        };
-
-        saveData(cardId, saved);
-        log('СОХРАНЕНО: "' + saved.title + '"', true);
-
-        // Отслеживание позиции
-        let attempts = 0;
-        const poll = setInterval(() => {
-            let video = null;
-            try { video = Lampa.PlayerVideo.video(); } catch (e) {}
-            if (video) {
-                clearInterval(poll);
-                log('видео найдено, отслеживаю позицию', false);
-                video.addEventListener('timeupdate', function () {
-                    if (!video.paused) {
-                        saved.position = video.currentTime;
-                        saveData(cardId, saved);
-                    }
-                });
-            } else if (++attempts > 30) {
-                clearInterval(poll);
-            }
-        }, 500);
-    }
-
-    // ===== Подписка на события игрока (несколько источников) =====
-    function setupPlayerListener() {
-        if (Lampa.Player && Lampa.Player.listener) {
-            Lampa.Player.listener.follow('start', onPlayerStart);
-            log('подписан на Player.listener', false);
-        }
-        if (Lampa.Listener) {
-            Lampa.Listener.follow('player', function (e) {
-                if (e && (e.type === 'start' || e.type === 'play')) {
-                    onPlayerStart(e);
-                }
-            });
-            log('подписан на global Listener player', false);
-        }
-        // Страховка: перехватываем вызов Torrent.open — там гарантированно есть хэш
-        if (Lampa.Torrent && Lampa.Torrent.open) {
-            const orig = Lampa.Torrent.open;
-            Lampa.Torrent.open = function (hash, movie) {
-                if (hash && movie && movie.id) {
-                    saveData(movie.id, {
-                        torrent_hash: hash,
-                        file_index: 0,
-                        position: 0,
-                        title: movie.name || movie.title
-                    });
-                    log('СОХРАНЕНО (через Torrent.open): "' + (movie.name || movie.title) + '"', true);
-                }
-                return orig.apply(this, arguments);
-            };
-            log('перехватил Torrent.open', false);
-        }
-    }
-
-    // ===== Кнопка в карточке =====
-    function setupCardButton() {
-        Lampa.Listener.follow('full', function (e) {
-            if (e.type !== 'complite' || !e.data || !e.data.movie) return;
-            const movie = e.data.movie;
-            const method = e.object && e.object.method;
-            if (method !== 'tv') return;
-
-            $('.button--continue-series').remove();
-            $('.full-start-new__buttons').append(
-                `<div class="full-start__button selector button--continue-series">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
-                    <span>Продолжить</span>
-                </div>`
-            );
-
-            $('.button--continue-series').on('hover:enter', function () {
-                const saved = getData(movie.id);
-                log('нажата кнопка. Данные ' + (saved ? 'ЕСТЬ: ' + saved.title : 'ОТСУТСТВУЮТ'), true);
-                if (!saved) {
-                    Lampa.Noty.show('CS: прогресса нет. Запустите серию вручную');
-                    return;
-                }
-                Lampa.Torrent.open(saved.torrent_hash, movie);
-                Lampa.Noty.show('CS: запуск "' + saved.title + '"');
-            });
+        save(movie.id, {
+            hash, index, timeline_hash,
+            url: data.url,
+            title: movie.name || movie.title,
+            savedAt: Date.now()
         });
+        log('сохранено "' + (movie.name || movie.title) + '"', true);
+    });
+
+    // === Кнопка в карточке ===
+    Lampa.Listener.follow('full', function (e) {
+        if (e.type !== 'complite' || !e.data || !e.data.movie) return;
+        $('.button--continue-series').remove();
+
+        const movie = e.data.movie;
+        const activity = Lampa.Activity.active();
+
+        if (!isSeries(movie, activity)) { log('не сериал', false); return; }
+
+        $('.full-start-new__buttons').append(
+            `<div class="full-start__button selector button--continue-series">
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                <span>Продолжить</span>
+            </div>`
+        );
+
+        $('.button--continue-series').on('hover:enter', function () {
+            const d = get(movie.id);
+            log('нажата. данные: ' + (d ? 'есть' : 'нет'), true);
+            if (!d) { Lampa.Noty.show('CS: нет сохранённой серии'); return; }
+            try { resume(d, movie); } catch (ex) { log('ошибка: ' + ex.message, true); }
+        });
+    });
+
+    function resume(d, movie) {
+        // 1) Пытаемся получить сохранённую позицию из нативного Timeline Lampa
+        let position = 0;
+        try {
+            if (d.timeline_hash && Lampa.Timeline && Lampa.Timeline.view) {
+                const tl = Lampa.Timeline.view(d.timeline_hash);
+                if (tl && tl.time) position = tl.time;
+                log('timeline: ' + Math.round(position) + 'с', false);
+            }
+        } catch (e) { log('timeline err: ' + e.message, false); }
+
+        // 2) Открываем торрент напрямую
+        log('открываю торрент ' + d.hash.slice(0, 8) + '…', true);
+        try { Lampa.Torrent.open(d.hash, movie); } catch (e) {
+            log('torrent.open: ' + e.message, true);
+            return;
+        }
+
+        // 3) Через 1с пробуем перемотать плеер
+        if (position > 0) {
+            let tries = 0;
+            const t = setInterval(() => {
+                let v = null;
+                try { v = Lampa.PlayerVideo.video(); } catch (e) {}
+                if (v) {
+                    v.currentTime = position;
+                    clearInterval(t);
+                    log('перемотал на ' + Math.round(position) + 'с', true);
+                } else if (++tries > 20) clearInterval(t);
+            }, 500);
+        }
     }
 
-    function init() {
-        log('плагин загружен (версия 5)', true);
-        setupPlayerListener();
-        setupCardButton();
-    }
-
-    if (window.appready) init();
-    else Lampa.Listener.follow('app', e => { if (e.type === 'ready') init(); });
+    log('плагин v7 загружен', true);
 })();
