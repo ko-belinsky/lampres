@@ -1,10 +1,11 @@
 (function () {
     'use strict';
-    if (window.cs_v14) return;
-    window.cs_v14 = true;
+    if (window.cs_v15) return;
+    window.cs_v15 = true;
 
-    const KEY = 'cs_v14_store';
-    function L(m) { console.log('CS14 ' + m); }
+    const KEY = 'cs_v15_store';
+    function L(m) { console.log('CS15 ' + m); }
+
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); L('SAVED id='+id); }
         catch(e) { L('save err '+e.message); }
@@ -15,39 +16,74 @@
     function isSeries(m) { return m && (m.number_of_seasons > 0 || !!m.first_air_date || (m.name && !m.title)); }
     function currentMovie() { try { const a = Lampa.Activity.active(); return a && (a.movie || a.card || a.card_data); } catch(e) { return null; } }
 
-    // === Хук Player.play: сохраняем ВСЕ сериализуемые поля аргумента ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v14) {
+    // Пробуем вычислить хэш Timeline из данных торрента
+    function guessTimelineTime(d) {
+        const candidates = [];
+        if (!d) return 0;
+
+        const th = d.torrent_hash || d.__hash;
+        const idx = d.id !== undefined ? d.id : d.__index;
+        const path = d.path;
+
+        if (window.Lampa && Lampa.Utils && typeof Lampa.Utils.hash === 'function') {
+            if (th && idx !== undefined) {
+                candidates.push(Lampa.Utils.hash(th + ':' + idx));
+                candidates.push(Lampa.Utils.hash(th + '_' + idx));
+                candidates.push(Lampa.Utils.hash(th + idx));
+            }
+            if (path) {
+                candidates.push(Lampa.Utils.hash(path));
+            }
+            if (th && d.season !== undefined && d.episode !== undefined) {
+                candidates.push(Lampa.Utils.hash(th + ':s' + d.season + 'e' + d.episode));
+                candidates.push(Lampa.Utils.hash(d.season + ':' + d.episode + ':' + (d.first_title || d.title)));
+            }
+        }
+
+        if (window.Lampa && Lampa.Timeline && typeof Lampa.Timeline.view === 'function') {
+            for (const h of candidates) {
+                try {
+                    const v = Lampa.Timeline.view(h);
+                    if (v && v.time > 1) {
+                        L('TIMELINE found hash=' + h.slice(0,8) + ' time=' + Math.round(v.time));
+                        return v.time;
+                    }
+                } catch(e) {}
+            }
+        }
+        L('TIMELINE not found, candidates=' + candidates.length);
+        return 0;
+    }
+
+    // === Хук Player.play: сохраняем все нужные поля ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v15) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
                 if (arg && typeof arg === 'object') {
-                    const prim = {};
-                    for (const k in arg) {
-                        const v = arg[k];
-                        if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-                            prim[k] = v;
-                            const vs = typeof v === 'string' ? v.slice(0, 120) : String(v);
-                            L('PLAY.' + k + '=' + vs);
-                        }
-                    }
-                    L('PLAY keys: ' + Object.keys(prim).join(','));
-
                     const movie = arg.card || arg.movie || currentMovie();
-                    if (movie && movie.id && isSeries(movie) && prim.url) {
-                        const h = String(prim.url).match(/[?&]link=([a-f0-9]+)/i);
-                        const i = String(prim.url).match(/[?&]index=(\d+)/i);
-                        prim.__hash = h ? h[1] : null;
-                        prim.__index = i ? parseInt(i[1]) : 0;
-                        save(movie.id, prim);
+                    if (movie && movie.id && isSeries(movie) && arg.url) {
+                        const h = String(arg.url).match(/[?&]link=([a-f0-9]+)/i);
+                        const i = String(arg.url).match(/[?&]index=(\d+)/i);
+                        const data = {
+                            url: arg.url,
+                            torrent_hash: arg.torrent_hash || (h ? h[1] : null),
+                            id: arg.id !== undefined ? arg.id : (i ? parseInt(i[1]) : 0),
+                            path: arg.path,
+                            season: arg.season,
+                            episode: arg.episode,
+                            title: arg.title || movie.name || movie.title,
+                            first_title: arg.first_title
+                        };
+                        save(movie.id, data);
+                        L('PLAY saved hash=' + (data.torrent_hash||'').slice(0,8) + ' idx=' + data.id);
                     }
                 }
-            } catch(e) { L('hook err ' + e.message); }
+            } catch(e) { L('hook err '+e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v14 = true;
+        Lampa.Player.__hooked_v15 = true;
         L('HOOKED Player.play');
-    } else {
-        L('cannot hook Player.play');
     }
 
     // === Кнопка «Продолжить» ===
@@ -65,22 +101,46 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN click id=' + movie.id + ' data=' + (d ? 'yes keys=' + Object.keys(d).join(',') : 'no'));
-            if (!d || !d.url) { L('BTN: no url'); return; }
+            L('BTN click id=' + movie.id + ' data=' + (d ? 'yes' : 'no'));
+            if (!d || !d.url) return;
 
-            // Восстанавливаем аргумент как можно ближе к оригиналу
-            const playArg = {};
-            for (const k in d) {
-                if (k !== '__hash' && k !== '__index') playArg[k] = d[k];
+            const resumeTime = guessTimelineTime(d);
+
+            // Восстанавливаем аргумент Player.play
+            const playArg = {
+                url: d.url,
+                title: d.title,
+                card: movie,
+                movie: movie,
+                torrent_hash: d.torrent_hash,
+                id: d.id,
+                path: d.path,
+                season: d.season,
+                episode: d.episode,
+                first_title: d.first_title
+            };
+
+            L('BTN play resumeTime=' + Math.round(resumeTime));
+            Lampa.Player.play(playArg);
+
+            // Если нашли позицию в Timeline — перематываем вручную
+            if (resumeTime > 1) {
+                let tries = 0;
+                const timer = setInterval(function () {
+                    let v = null;
+                    try { v = Lampa.PlayerVideo.video(); } catch(e) {}
+                    if (v && v.readyState >= 1 && v.duration > 0) {
+                        v.currentTime = resumeTime;
+                        clearInterval(timer);
+                        L('SEEK to ' + Math.round(resumeTime));
+                    } else if (++tries > 40) {
+                        clearInterval(timer);
+                        L('SEEK timeout');
+                    }
+                }, 500);
             }
-            playArg.card = movie;
-            playArg.movie = movie;
-
-            L('BTN play url=' + String(d.url).slice(0, 80));
-            try { Lampa.Player.play(playArg); }
-            catch(ex) { L('play err ' + ex.message); }
         });
     });
 
-    L('v14 loaded');
+    L('v15 loaded');
 })();
