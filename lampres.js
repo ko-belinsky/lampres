@@ -1,61 +1,62 @@
 (function () {
     'use strict';
-    if (window.cs_v7) return;
-    window.cs_v7 = true;
+    if (window.cs_v8_diag) return;
+    window.cs_v8_diag = true;
 
-    const STORAGE_KEY = 'continue_series_v7';
-    const log = (m, tv) => { console.log('CS v7:', m); if (tv) try { Lampa.Noty.show('CS: ' + m); } catch(e){} };
+    const KEY = 'continue_series_v7';
+    const noty = (m) => { try { Lampa.Noty.show(m); } catch(e){} console.log('CS v8:', m); };
 
-    const save = (id, d) => { try { const a = JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'); a[id]=d; localStorage.setItem(STORAGE_KEY, JSON.stringify(a)); } catch(e){} };
-    const get  = (id) => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')[id]||null; } catch(e){ return null; } };
-
-    // Определение сериала — по нескольким признакам, как в MyShows
-    function isSeries(movie, activity) {
+    function isSeries(movie) {
         if (!movie) return false;
-        if (movie.number_of_seasons > 0) return true;
-        if (movie.first_air_date) return true;
-        if (activity && activity.method === 'tv') return true;
-        if (movie.name && !movie.title) return true;
-        return false;
+        return movie.number_of_seasons > 0 || !!movie.first_air_date || !!(movie.name && !movie.title);
     }
 
-    // === Сохранение при старте плеера ===
-    Lampa.Player.listener.follow('start', function (data) {
-        const movie = data.card || (Lampa.Activity.active() && Lampa.Activity.active().movie);
-        if (!movie || !movie.id || !isSeries(movie)) return;
+    // Уведомляем при загрузке
+    noty('v8: загружен');
 
-        // Ищем торрент-инфу в нескольких местах
-        let hash = data.torrent_hash || null;
-        let index = data.file_index ?? data.index ?? 0;
-        if (!hash && data.url) {
-            const m = data.url.match(/[?&]link=([^&]+)/i);
-            const i = data.url.match(/[?&]index=(\d+)/i);
-            if (m) hash = m[1];
-            if (i) index = parseInt(i[1]);
+    // === 1. Слушатель старта плеера ===
+    function attach() {
+        if (!window.Lampa || !Lampa.Player || !Lampa.Player.listener) {
+            setTimeout(attach, 1000);
+            return;
         }
-        if (!hash) { log('нет torrent_hash в событии плеера', true); return; }
+        noty('v8: слушатель игрока установлен');
 
-        // Timeline hash — Lampa сама его генерирует, часто = data.hash
-        const timeline_hash = data.hash || data.timeline_hash || null;
+        Lampa.Player.listener.follow('start', function (data) {
+            const keys = data ? Object.keys(data).join(',') : 'нет data';
+            noty('START keys: ' + keys.slice(0, 80));
 
-        save(movie.id, {
-            hash, index, timeline_hash,
-            url: data.url,
-            title: movie.name || movie.title,
-            savedAt: Date.now()
+            const movie = data && (data.card || data.movie) || (Lampa.Activity.active() && Lampa.Activity.active().movie);
+            if (!movie || !movie.id) { noty('START: нет movie.id'); return; }
+            noty('START id=' + movie.id + ' series=' + isSeries(movie));
+
+            let hash = data && (data.torrent_hash || data.hash);
+            let url = data && data.url;
+            if (!hash && url) {
+                const m = url.match(/[?&]link=([^&]+)/i);
+                if (m) hash = m[1];
+            }
+            if (!hash) {
+                noty('START: нет hash. url=' + (url ? url.slice(0, 60) : 'нет'));
+                return;
+            }
+            noty('START hash=' + hash.slice(0, 10));
+
+            try {
+                const a = JSON.parse(localStorage.getItem(KEY) || '{}');
+                a[movie.id] = { hash, title: movie.name || movie.title };
+                localStorage.setItem(KEY, JSON.stringify(a));
+                noty('SAVED id=' + movie.id);
+            } catch (e) { noty('SAVE ERR: ' + e.message); }
         });
-        log('сохранено "' + (movie.name || movie.title) + '"', true);
-    });
+    }
 
-    // === Кнопка в карточке ===
+    // === 2. Кнопка в карточке ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         $('.button--continue-series').remove();
-
         const movie = e.data.movie;
-        const activity = Lampa.Activity.active();
-
-        if (!isSeries(movie, activity)) { log('не сериал', false); return; }
+        if (!isSeries(movie)) return;
 
         $('.full-start-new__buttons').append(
             `<div class="full-start__button selector button--continue-series">
@@ -65,45 +66,17 @@
         );
 
         $('.button--continue-series').on('hover:enter', function () {
-            const d = get(movie.id);
-            log('нажата. данные: ' + (d ? 'есть' : 'нет'), true);
-            if (!d) { Lampa.Noty.show('CS: нет сохранённой серии'); return; }
-            try { resume(d, movie); } catch (ex) { log('ошибка: ' + ex.message, true); }
+            let all = {};
+            try { all = JSON.parse(localStorage.getItem(KEY) || '{}'); } catch(e){}
+            const keys = Object.keys(all).join(',') || 'пусто';
+            noty('BTN id=' + movie.id);
+            noty('BTN keys: ' + keys.slice(0, 80));
+            const d = all[String(movie.id)];
+            if (!d) { noty('BTN: данных нет'); return; }
+            noty('BTN: есть hash=' + d.hash.slice(0, 10));
+            try { Lampa.Torrent.open(d.hash, movie); } catch (ex) { noty('BTN err: ' + ex.message); }
         });
     });
 
-    function resume(d, movie) {
-        // 1) Пытаемся получить сохранённую позицию из нативного Timeline Lampa
-        let position = 0;
-        try {
-            if (d.timeline_hash && Lampa.Timeline && Lampa.Timeline.view) {
-                const tl = Lampa.Timeline.view(d.timeline_hash);
-                if (tl && tl.time) position = tl.time;
-                log('timeline: ' + Math.round(position) + 'с', false);
-            }
-        } catch (e) { log('timeline err: ' + e.message, false); }
-
-        // 2) Открываем торрент напрямую
-        log('открываю торрент ' + d.hash.slice(0, 8) + '…', true);
-        try { Lampa.Torrent.open(d.hash, movie); } catch (e) {
-            log('torrent.open: ' + e.message, true);
-            return;
-        }
-
-        // 3) Через 1с пробуем перемотать плеер
-        if (position > 0) {
-            let tries = 0;
-            const t = setInterval(() => {
-                let v = null;
-                try { v = Lampa.PlayerVideo.video(); } catch (e) {}
-                if (v) {
-                    v.currentTime = position;
-                    clearInterval(t);
-                    log('перемотал на ' + Math.round(position) + 'с', true);
-                } else if (++tries > 20) clearInterval(t);
-            }, 500);
-        }
-    }
-
-    log('плагин v7 загружен', true);
+    attach();
 })();
