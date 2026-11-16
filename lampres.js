@@ -1,19 +1,12 @@
 (function () {
     'use strict';
-    if (window.cs_v10) return;
-    window.cs_v10 = true;
+    if (window.cs_v11) return;
+    window.cs_v11 = true;
 
-    const KEY = 'cs_v10_store';
-    const LOG_KEY = 'cs_v10_logs';
+    const KEY = 'cs_v11_store';
 
     function L(m) {
-        console.log('CS10 ' + m);
-        try {
-            const arr = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
-            arr.push(new Date().toLocaleTimeString() + ' ' + m);
-            if (arr.length > 200) arr.shift();
-            localStorage.setItem(LOG_KEY, JSON.stringify(arr));
-        } catch(e) {}
+        console.log('CS11 ' + m);
     }
 
     function save(id, data) {
@@ -21,7 +14,6 @@
             const all = JSON.parse(localStorage.getItem(KEY) || '{}');
             all[String(id)] = data;
             localStorage.setItem(KEY, JSON.stringify(all));
-            L('SAVED id=' + id + ' hash=' + (data.hash||'').slice(0,8) + ' idx=' + data.index);
         } catch(e) { L('SAVE ERR ' + e.message); }
     }
 
@@ -41,64 +33,79 @@
         } catch(e) { return null; }
     }
 
-    // === 1. Хук на Lampa.Player.play ===
+    // === Хук на Lampa.Player.play — сохраняем ПОЛНЫЙ URL ===
     function hookPlayerPlay() {
         try {
-            if (!Lampa.Player || typeof Lampa.Player.play !== 'function') { L('no Lampa.Player.play'); return; }
-            if (Lampa.Player.__hooked_v10) return;
+            if (!Lampa.Player || typeof Lampa.Player.play !== 'function') return;
+            if (Lampa.Player.__hooked_v11) return;
             const orig = Lampa.Player.play;
             Lampa.Player.play = function () {
-                L('PLAYER.PLAY argsLen=' + arguments.length + ' arg0Type=' + (arguments[0] && typeof arguments[0]));
                 try {
                     const args = Array.prototype.slice.call(arguments);
                     const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
                     const movie = currentMovie();
-                    L('PLAYER.PLAY url=' + (url ? String(url).slice(0, 100) : 'none') + ' movieId=' + (movie && movie.id));
                     if (url && movie && movie.id && isSeries(movie)) {
                         const m = String(url).match(/[?&]link=([a-f0-9]+)/i);
                         const i = String(url).match(/[?&]index=(\d+)/i);
-                        if (m) {
-                            const ex = get(movie.id) || {};
-                            save(movie.id, { hash: m[1], index: i ? parseInt(i[1]) : 0, title: movie.name || movie.title, time: ex.time || 0 });
-                        }
+                        const hash = m ? m[1] : (args[0] && args[0].hash);
+                        const idx = i ? parseInt(i[1]) : 0;
+                        const ex = get(movie.id) || {};
+                        save(movie.id, {
+                            fullUrl: url,
+                            hash: hash,
+                            index: idx,
+                            title: movie.name || movie.title,
+                            time: ex.time || 0
+                        });
+                        L('SAVED fullUrl len=' + url.length + ' hash=' + (hash||'').slice(0,8) + ' idx=' + idx + ' id=' + movie.id);
                     }
                 } catch(e) { L('PLAYER.PLAY hook err: ' + e.message); }
                 return orig.apply(this, arguments);
             };
-            Lampa.Player.__hooked_v10 = true;
+            Lampa.Player.__hooked_v11 = true;
             L('HOOKED Player.play OK');
         } catch(e) { L('hookPlayerPlay err: ' + e.message); }
     }
 
-    // === 2. Поллинг <video> ===
-    let last = { hash: null, id: null };
+    // === Отслеживание позиции через <video> ===
+    let attachedVideo = null;
     function pollVideo() {
         try {
             const v = document.querySelector('video');
-            if (!v || !v.src) return;
-            const m = v.src.match(/[?&]link=([a-f0-9]+)/i);
-            if (!m) return;
-            const hash = m[1];
-            const iM = v.src.match(/[?&]index=(\d+)/i);
-            const idx = iM ? parseInt(iM[1]) : 0;
+            if (!v || v === attachedVideo) return;
+            if (!v.src) return;
             const movie = currentMovie();
             if (!movie || !movie.id) return;
-            if (last.hash === hash && last.id === movie.id) return;
-            last = { hash, id: movie.id };
-            L('POLL src=' + v.src.slice(0, 120));
-            L('POLL hash=' + hash.slice(0, 10) + ' idx=' + idx + ' id=' + movie.id + ' series=' + isSeries(movie));
-            if (!isSeries(movie)) { L('POLL skip: not series'); return; }
-            const ex = get(movie.id) || {};
-            save(movie.id, { hash, index: idx, title: movie.name || movie.title, time: ex.time || 0 });
+            const d = get(movie.id);
+            if (!d) return;
+
+            attachedVideo = v;
+            L('VIDEO attached, tracking time');
+            v.addEventListener('timeupdate', function () {
+                if (!v.paused && v.currentTime > 0) {
+                    const cur = get(movie.id);
+                    if (cur) {
+                        cur.time = v.currentTime;
+                        save(movie.id, cur);
+                    }
+                }
+            });
+            v.addEventListener('pause', function () {
+                const cur = get(movie.id);
+                if (cur && v.currentTime > 0) {
+                    cur.time = v.currentTime;
+                    save(movie.id, cur);
+                    L('PAUSE saved time=' + Math.round(v.currentTime));
+                }
+            });
         } catch(e) {}
     }
 
-    // === 3. Дамп доступных API ===
+    // === Дамп API на случай проблем ===
     setTimeout(() => {
         try {
-            L('Lampa.Torrent keys: ' + Object.keys(Lampa.Torrent || {}).join(','));
-            L('Lampa.Player keys: ' + Object.keys(Lampa.Player || {}).slice(0, 40).join(','));
-            L('Lampa.PlayerVideo keys: ' + Object.keys(Lampa.PlayerVideo || {}).slice(0, 40).join(','));
+            L('Player.play type=' + typeof Lampa.Player.play);
+            L('Torrent keys: ' + Object.keys(Lampa.Torrent || {}).join(','));
         } catch(e) {}
     }, 2000);
 
@@ -115,20 +122,33 @@
         );
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN click id=' + movie.id + ' data=' + (d ? 'yes hash=' + d.hash.slice(0,8) + ' idx=' + d.index : 'no'));
-            if (!d) {
-                L('--- DUMP last 20 log lines ---');
-                try {
-                    const logs = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
-                    logs.slice(-20).forEach(x => console.log('CS10 DUMP: ' + x));
-                } catch(e) {}
-                return;
-            }
-            try { Lampa.Torrent.open(d.hash, movie); } catch(ex) { L('BTN err: ' + ex.message); }
+            L('BTN click id=' + movie.id + ' data=' + (d ? 'fullUrl=' + (d.fullUrl ? 'yes(' + d.fullUrl.length + ')' : 'no') + ' time=' + Math.round(d.time||0) : 'no'));
+            if (!d || !d.fullUrl) { L('BTN: no fullUrl'); return; }
+            try {
+                L('BTN play url=' + d.fullUrl.slice(0, 120));
+                Lampa.Player.play({
+                    url: d.fullUrl,
+                    title: d.title,
+                    card: movie,
+                    movie: movie
+                });
+                // Перемотка после старта
+                if (d.time > 0) {
+                    let tries = 0;
+                    const t = setInterval(() => {
+                        const v = document.querySelector('video');
+                        if (v && v.readyState > 0) {
+                            v.currentTime = d.time;
+                            clearInterval(t);
+                            L('BTN seek to ' + Math.round(d.time));
+                        } else if (++tries > 30) clearInterval(t);
+                    }, 500);
+                }
+            } catch(ex) { L('BTN err: ' + ex.message); }
         });
     });
 
     hookPlayerPlay();
-    setInterval(pollVideo, 500);
-    L('v10 loaded');
+    setInterval(pollVideo, 1000);
+    L('v11 loaded');
 })();
