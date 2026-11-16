@@ -1,15 +1,16 @@
 (function () {
     'use strict';
-    if (window.cs_v25) return;
-    window.cs_v25 = true;
+    if (window.cs_v26) return;
+    window.cs_v26 = true;
 
-    const KEY = 'cs_v25_store';
+    const KEY = 'cs_v26_store';
     let lastMovieId = null;
     let pendingResume = null;
+    let lastFvSnapshot = {};
 
     function L() {
         var args = Array.prototype.slice.call(arguments);
-        args.unshift('CS25');
+        args.unshift('CS26');
         console.log.apply(console, args);
     }
     function save(id, data) {
@@ -20,9 +21,17 @@
     }
     function isSeries(m) { return m && (m.number_of_seasons > 0 || !!m.first_air_date || (m.name && !m.title)); }
     function currentMovie() { try { const a = Lampa.Activity.active(); return a && (a.movie || a.card || a.card_data); } catch(e) { return null; } }
+    function getFvKey() {
+        try {
+            if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.account && Lampa.Account.Permit.account.profile) {
+                return 'file_view_' + Lampa.Account.Permit.account.profile.id;
+            }
+        } catch(e) {}
+        return 'file_view';
+    }
 
-    // === 1. Hook Player.play — запоминаем текущий movie.id ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v25) {
+    // === 1. Hook Player.play — сбрасываем снимок при старте ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v26) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -38,68 +47,63 @@
                         const ex = get(movie.id) || {};
                         prim.__time = ex.__time || 0;
                         prim.__duration = ex.__duration || 0;
-                        prim.__card_id = ex.__card_id || null;
+                        prim.__timelineHash = ex.__timelineHash || null;
                         save(movie.id, prim);
-                        L('PLAY saved id=' + movie.id);
+                        try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
+                        L('PLAY id=' + movie.id + ' snapshot=' + Object.keys(lastFvSnapshot).length);
                     }
                 }
             } catch(e) { L('hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v25 = true;
+        Lampa.Player.__hooked_v26 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Hook Timeline.update — Lampa сама даёт нам card_id и time ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.update === 'function' && !Lampa.Timeline.__hooked_v25_update) {
-        const origUpdate = Lampa.Timeline.update;
-        Lampa.Timeline.update = function () {
-            try {
-                const args = Array.prototype.slice.call(arguments);
-                const hash = args[0];
-                let time = 0, duration = 0;
-                if (typeof args[1] === 'number') time = args[1];
-                if (typeof args[2] === 'number') duration = args[2];
-                if (args[1] && typeof args[1] === 'object') {
-                    time = args[1].time || 0;
-                    duration = args[1].duration || 0;
-                }
-                if (hash && time > 1 && lastMovieId) {
-                    const d = get(lastMovieId);
-                    if (d) {
-                        d.__time = time;
-                        d.__duration = duration || d.__duration || 0;
-                        d.__card_id = hash;
-                        save(lastMovieId, d);
-                        L('TU saved hash=' + String(hash).slice(0,8) + ' time=' + Math.round(time));
+    // === 2. Опрос file_view — ловим изменения ===
+    setInterval(function () {
+        if (!lastMovieId) return;
+        try {
+            const store = JSON.parse(localStorage.getItem(getFvKey()) || '{}');
+            let best = null;
+            for (const hash in store) {
+                const v = store[hash];
+                if (!v || !v.time) continue;
+                const prev = lastFvSnapshot[hash];
+                const prevTime = prev ? (prev.time || 0) : -1;
+                if (Math.abs(prevTime - v.time) > 1) {
+                    if (!best || v.time > (best.time || 0)) {
+                        best = { hash, time: v.time, duration: v.duration, percent: v.percent };
                     }
                 }
-            } catch(e) { L('tu err', e.message); }
-            return origUpdate.apply(this, arguments);
-        };
-        Lampa.Timeline.__hooked_v25_update = true;
-        L('HOOKED Timeline.update');
-    }
+            }
+            if (best) {
+                const d = get(lastMovieId);
+                if (d) {
+                    d.__timelineHash = best.hash;
+                    d.__time = best.time;
+                    d.__duration = best.duration || d.__duration || 0;
+                    save(lastMovieId, d);
+                    L('FV hash=' + best.hash.slice(0,10) + ' time=' + Math.round(best.time) + ' id=' + lastMovieId);
+                }
+            }
+            lastFvSnapshot = store;
+        } catch(e) {}
+    }, 2000);
 
-    // === 3. Hook Timeline.view — подсовываем сохранённое время ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v25_view) {
+    // === 3. Hook Timeline.view — переопределяем ответ ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v26_view) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
             try { result = origView.apply(this, arguments); } catch(e) { result = null; }
-            L('TV hash=' + String(hash||'').slice(0,16) + ' -> ' + (result ? Math.round(result.time||0)+'s' : 'null'));
-
-            if (pendingResume && pendingResume.movieId) {
-                L('TV OVERRIDE -> ' + Math.round(pendingResume.time) + 's');
-                return {
-                    time: pendingResume.time,
-                    duration: pendingResume.duration || (result && result.duration) || pendingResume.time + 3000,
-                    percent: 0
-                };
+            if (pendingResume && pendingResume.time > 1) {
+                L('TV hash=' + String(hash||'').slice(0,10) + ' OVERRIDE -> ' + Math.round(pendingResume.time));
+                return { time: pendingResume.time, duration: pendingResume.duration || (pendingResume.time + 3000), percent: 0 };
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v25_view = true;
+        Lampa.Timeline.__hooked_v26_view = true;
         L('HOOKED Timeline.view');
     }
 
@@ -118,32 +122,41 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN click id=' + movie.id, 'data=' + (d ? 'time=' + Math.round(d.__time||0) : 'no'));
+            L('BTN click id=' + movie.id + ' data=' + (d ? 'time=' + Math.round(d.__time||0) + ' hash=' + (d.__timelineHash||'none').slice(0,10) : 'no'));
             if (!d || !d.url) return;
 
             const resumeTime = d.__time || 0;
-            L('BTN resumeTime=' + Math.round(resumeTime));
-
             if (resumeTime > 1) {
                 pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
-                L('BTN pendingResume SET');
+                L('BTN pendingResume SET ' + Math.round(resumeTime));
                 setTimeout(function () {
                     if (pendingResume && pendingResume.movieId === movie.id) {
                         pendingResume = null;
-                        L('BTN pendingResume cleared');
+                        L('BTN pendingResume TIMEOUT');
                     }
-                }, 15000);
+                }, 30000);
             }
 
             const playArg = {};
             for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
             playArg.card = movie;
             playArg.movie = movie;
-
             L('BTN play');
             Lampa.Player.play(playArg);
+
+            // Дополнительно — пробуем PV.to через 5 секунд
+            if (resumeTime > 1) {
+                setTimeout(function () {
+                    try {
+                        if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
+                            L('BTN PV.to(' + Math.round(resumeTime) + ')');
+                            Lampa.PlayerVideo.to(resumeTime);
+                        }
+                    } catch(e) { L('PV.to err', e.message); }
+                }, 5000);
+            }
         });
     });
 
-    L('v25 loaded');
+    L('v26 loaded');
 })();
