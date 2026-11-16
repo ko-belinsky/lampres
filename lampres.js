@@ -1,135 +1,148 @@
-(function () {
+(function() {
     'use strict';
 
-    if (window.continue_series_v4) return;
-    window.continue_series_v4 = true;
-
-    console.log('ContinueSeries V4: Скрипт запущен');
+    if (window.continue_series_plugin) return;
+    window.continue_series_plugin = true;
 
     const STORAGE_KEY = 'continue_series_data';
 
-    function saveData(cardId, data) {
-        try {
-            const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-            all[cardId] = data;
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
-        } catch (e) { console.error('CS V4: save error', e); }
-    }
-
-    function getData(cardId) {
-        try {
-            const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-            return all[cardId] || null;
-        } catch (e) { return null; }
-    }
-
-    function formatTime(sec) {
-        if (!sec || isNaN(sec)) return '0:00';
-        const h = Math.floor(sec / 3600);
-        const m = Math.floor((sec % 3600) / 60);
-        const s = Math.floor(sec % 60);
-        return (h > 0 ? h + ':' : '') + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
-    }
-
-    // --- Сохранение прогресса при старте плеера ---
+    // --- 1. Сохранение контекста при старте торрент-плеера ---
     function setupPlayerListener() {
-        if (!Lampa.Player || !Lampa.Player.listener) return;
+        Lampa.Player.listener.follow('start', function(data) {
+            // Работаем только если это торрент и есть объект movie (карточка)
+            if (!data.torrent_hash || !data.movie) return;
+            
+            const movie = data.movie;
+            // Нас интересуют только сериалы
+            if (movie.media_type !== 'tv') return;
 
-        Lampa.Player.listener.follow('start', function (data) {
-            console.log('CS V4: Player start', data);
-            if (!data.torrent_hash || !data.movie || data.movie.media_type !== 'tv') return;
-
-            const cardId = data.movie.id;
+            const cardId = movie.id; // TMDB ID
             if (!cardId) return;
 
-            const saved = {
+            // Получаем текущую позицию из Timeline
+            // Хэш для Timeline генерируется отдельно, но мы можем сохранить
+            // позицию напрямую из плеера после его инициализации.
+            // Пока сохраним "заглушку", а позицию обновим позже.
+            let savedData = {
                 torrent_hash: data.torrent_hash,
-                file_index: data.id,
-                position: 0,
-                title: data.movie.name || data.movie.title
+                file_index: data.id, // Индекс файла внутри торрента
+                position: 0,         // Будет обновлено
+                title: movie.name || movie.title
             };
 
-            let video = null;
-
-            const onCanPlay = () => {
-                video = Lampa.PlayerVideo.video();
-                if (video && saved.position > 0) {
-                    video.currentTime = saved.position;
+            // Слушаем обновление времени, чтобы сохранять актуальную позицию
+            let currentVideo = null;
+            function onCanPlay() {
+                currentVideo = Lampa.PlayerVideo.video();
+                if (currentVideo) {
+                    // Если в сохранённых данных уже есть позиция, перематываем
+                    if (savedData.position > 0) {
+                        currentVideo.currentTime = savedData.position;
+                    }
                 }
                 Lampa.PlayerVideo.listener.remove('canplay', onCanPlay);
-            };
+            }
 
-            const onTimeUpdate = () => {
-                if (video && !video.paused) {
-                    saved.position = video.currentTime;
-                    saveData(cardId, saved);
+            function onTimeUpdate() {
+                if (currentVideo && !currentVideo.paused) {
+                    savedData.position = currentVideo.currentTime;
+                    // Периодически сохраняем в localStorage
+                    saveDataForCard(cardId, savedData);
                 }
-            };
+            }
 
-            const onDestroy = () => {
-                if (video) {
-                    saved.position = video.currentTime;
-                    saveData(cardId, saved);
+            function onDestroy() {
+                // Сохраняем финальную позицию при закрытии
+                if (currentVideo) {
+                    savedData.position = currentVideo.currentTime;
+                    saveDataForCard(cardId, savedData);
                 }
                 Lampa.PlayerVideo.listener.remove('canplay', onCanPlay);
                 Lampa.PlayerVideo.listener.remove('timeupdate', onTimeUpdate);
                 Lampa.Player.listener.remove('destroy', onDestroy);
-            };
+            }
 
             Lampa.PlayerVideo.listener.follow('canplay', onCanPlay);
             Lampa.PlayerVideo.listener.follow('timeupdate', onTimeUpdate);
             Lampa.Player.listener.follow('destroy', onDestroy);
 
-            saveData(cardId, saved);
-            console.log('CS V4: Прогресс сохранён для сериала', cardId);
+            // Сразу сохраняем первоначальные данные
+            saveDataForCard(cardId, savedData);
         });
     }
 
-    // --- Кнопка добавляется ВСЕГДА для сериалов ---
-    function setupCardButton() {
-        Lampa.Listener.follow('full', function (e) {
-            if (e.type !== 'complite') return;
-            if (!e.data || !e.data.movie) return;
-
-            const movie = e.data.movie;
-            if (movie.media_type !== 'tv') return;
-
-            // Убираем старую кнопку, чтобы не дублировать
-            $('.button--continue-series').remove();
-
-            // Добавляем кнопку — без каких-либо условий
-            $('.full-start-new__buttons').append(
-                `<div class="full-start__button selector button--continue-series">
-                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                        <path d="M8 5v14l11-7z"/>
-                    </svg>
-                    <span>Продолжить</span>
-                </div>`
-            );
-
-            $('.button--continue-series').on('hover:enter', function () {
-                const saved = getData(movie.id);
-                console.log('CS V4: Нажата "Продолжить" для', movie.id, '| данные:', saved);
-
-                if (!saved) {
-                    Lampa.Noty.show('Нет сохранённого прогресса — запустите серию вручную один раз');
-                    return;
-                }
-
-                Lampa.Torrent.open(saved.torrent_hash, movie);
-                Lampa.Noty.show('Продолжаем с ' + formatTime(saved.position));
-            });
-
-            console.log('CS V4: Кнопка добавлена для', movie.name || movie.title);
-        });
+    // --- 2. Вспомогательные функции для работы с localStorage ---
+    function saveDataForCard(cardId, data) {
+        try {
+            const allData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            allData[cardId] = data;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(allData));
+        } catch (e) {
+            console.error('ContinueSeries: Ошибка сохранения', e);
+        }
     }
 
+    function getDataForCard(cardId) {
+        try {
+            const allData = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            return allData[cardId] || null;
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // --- 3. Регистрация пункта в контекстном меню карточки ---
+    function setupContextMenu() {
+        Lampa.Manifest.plugins = {
+            type: 'video',
+            onContextMenu: function(card) {
+                // Показываем пункт только для сериалов, у которых есть сохранённые данные
+                if (card.media_type !== 'tv') return null;
+                const saved = getDataForCard(card.id);
+                if (!saved) return null;
+
+                return {
+                    title: 'Продолжить просмотр',
+                    icon: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M8 5V19L19 12L8 5Z" fill="currentColor"/></svg>'
+                };
+            },
+            onContextLauch: function(card) {
+                const saved = getDataForCard(card.id);
+                if (!saved) return;
+
+                // Прямой запуск торрента по известному хэшу
+                // Torrent.open(hash, movie) пропускает этап поиска и выбора раздачи
+                Lampa.Torrent.open(saved.torrent_hash, card);
+                
+                // После открытия торрента нужно выбрать файл по индексу и перемотать.
+                // Это можно сделать через слушатель события 'torrent_file' или
+                // дождавшись старта плеера, как в пункте 1.
+                Lampa.Noty.show('Запуск с позиции ' + formatTime(saved.position));
+            }
+        };
+    }
+
+    // --- 4. Вспомогательная функция форматирования времени ---
+    function formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const h = Math.floor(seconds / 3600);
+        const m = Math.floor((seconds % 3600) / 60);
+        const s = Math.floor(seconds % 60);
+        return (h > 0 ? h + ':' : '') + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
+    // --- 5. Инициализация ---
     function init() {
         setupPlayerListener();
-        setupCardButton();
-        console.log('CS V4: Плагин инициализирован');
+        setupContextMenu();
+        console.log('ContinueSeries: Плагин загружен');
     }
 
-    if (window.appready) init();
-    else Lampa.Listener.follow('app', e => { if (e.type === 'ready') init(); });
+    if (window.appready) {
+        init();
+    } else {
+        Lampa.Listener.follow('app', function(e) {
+            if (e.type === 'ready') init();
+        });
+    }
 })();
