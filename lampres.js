@@ -1,16 +1,16 @@
 (function () {
     'use strict';
-    if (window.cs_v22) return;
-    window.cs_v22 = true;
+    if (window.cs_v23) return;
+    window.cs_v23 = true;
 
-    const KEY = 'cs_v22_store';
+    const KEY = 'cs_v23_store';
     let lastArg = null;
     let lastMovieId = null;
 
     // Отдельная группа в консоли Lampa
     function L() {
         var args = Array.prototype.slice.call(arguments);
-        args.unshift('CS22');
+        args.unshift('CS23');
         console.log.apply(console, args);
     }
 
@@ -25,7 +25,7 @@
     function currentMovie() { try { const a = Lampa.Activity.active(); return a && (a.movie || a.card || a.card_data); } catch(e) { return null; } }
 
     // === 1. Хук Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v22) {
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v23) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -48,53 +48,72 @@
             } catch(e) { L('hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v22 = true;
+        Lampa.Player.__hooked_v23 = true;
         L('HOOKED');
     }
 
-    // === 2. Поиск времени напрямую в localStorage ===
-    function findTimeInLocalStorage(movieId, torrentHash, filePath) {
-        const candidates = [];
-        // Собираем все ключи localStorage, которые могут содержать таймкоды
-        for (let i = 0; i < localStorage.length; i++) {
-            const k = localStorage.key(i);
-            if (!k) continue;
-            if (k.indexOf('file_view') === 0 ||
-                k.indexOf('timecode') === 0 ||
-                k.indexOf('timeline') === 0 ||
-                k.indexOf('view') === 0) {
-                try {
-                    const raw = localStorage.getItem(k);
-                    const obj = JSON.parse(raw);
-                    if (obj && typeof obj === 'object') {
-                        candidates.push({ key: k, data: obj });
-                    }
-                } catch(e) {}
+    // === 2. Поиск времени в file_view с диагностикой ===
+    function findTimeInFileView(movieId, arg) {
+        try {
+            // Находим профиль
+            let profileId = '';
+            try {
+                if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.account && Lampa.Account.Permit.account.profile) {
+                    profileId = Lampa.Account.Permit.account.profile.id;
+                }
+            } catch(e) {}
+            const storeKey = profileId ? 'file_view_' + profileId : 'file_view';
+            let store = null;
+            try { store = JSON.parse(localStorage.getItem(storeKey)); } catch(e) {}
+            if (!store || typeof store !== 'object') { L('store not found', storeKey); return 0; }
+
+            const keys = Object.keys(store);
+            L('file_view keys:', keys.slice(0, 20).join(', '));
+            // Выводим структуру первой записи для примера
+            if (keys.length > 0) {
+                const sampleKey = keys[0];
+                L('sample record key:', sampleKey);
+                L('sample record value:', JSON.stringify(store[sampleKey]).slice(0, 200));
             }
-        }
 
-        L('found storage keys:', candidates.map(c => c.key + '(' + Object.keys(c.data).length + ')').join(', '));
+            // Пробуем вычислить хэш по разным формулам
+            const originalName = arg.first_title || arg.title || (arg.card && (arg.card.original_name || arg.card.name));
+            const season = arg.season;
+            const episode = arg.episode;
+            const candidates = [];
 
-        for (const store of candidates) {
-            for (const id in store.data) {
-                const v = store.data[id];
-                if (!v || typeof v !== 'object') continue;
-
-                // Совпадение по ID карточки
-                if (v.card_id == movieId || v.movie_id == movieId || v.tmdb_id == movieId) {
-                    if (v.time > 1) { L('FOUND by card_id in', store.key, 'time', Math.round(v.time)); return v.time; }
+            if (Lampa.Utils && typeof Lampa.Utils.hash === 'function') {
+                if (season !== undefined && episode !== undefined && originalName) {
+                    candidates.push(Lampa.Utils.hash([season, episode, originalName]));
+                    candidates.push(Lampa.Utils.hash([1, episode, originalName])); // как в watched()
+                    candidates.push(Lampa.Utils.hash(season + ':' + episode + ':' + originalName));
+                    candidates.push(Lampa.Utils.hash(season + ':' + episode));
                 }
-                // Совпадение по хэшу торрента
-                if (torrentHash && (String(id).indexOf(torrentHash) >= 0 || (v.hash && String(v.hash).indexOf(torrentHash) >= 0))) {
-                    if (v.time > 1) { L('FOUND by hash in', store.key, 'time', Math.round(v.time)); return v.time; }
-                }
-                // Совпадение по пути файла
-                if (filePath && (v.path == filePath || String(id).indexOf(filePath) >= 0)) {
-                    if (v.time > 1) { L('FOUND by path in', store.key, 'time', Math.round(v.time)); return v.time; }
+                if (arg.path) candidates.push(Lampa.Utils.hash(arg.path));
+                if (arg.url) candidates.push(Lampa.Utils.hash(arg.url));
+            }
+
+            L('candidate hashes:', candidates.map(h => String(h).slice(0,8)).join(', '));
+
+            // Сравниваем с ключами
+            for (const h of candidates) {
+                if (store[h] && store[h].time > 1) {
+                    L('FOUND by hash', String(h).slice(0,8), 'time', Math.round(store[h].time));
+                    return store[h].time;
                 }
             }
-        }
-        L('NOT FOUND in localStorage');
+
+            // Если хэши не совпали, пробуем найти по времени (если в записи есть привязка к сезону/эпизоду)
+            // Но в file_view только хэши, поэтому просто выводим все записи для анализа
+            L('no hash match, dumping all records:');
+            keys.forEach(k => {
+                const v = store[k];
+                if (v && v.time > 1) {
+                    L('  record', k.slice(0,8), 'time=', Math.round(v.time), 'percent=', v.percent);
+                }
+            });
+
+        } catch(e) { L('findTime err', e.message); }
         return 0;
     }
 
@@ -116,7 +135,8 @@
             L('BTN click id=' + movie.id, 'data=' + (d ? 'yes' : 'no'));
             if (!d || !d.url) return;
 
-            const resumeTime = findTimeInLocalStorage(movie.id, d.torrent_hash, d.path);
+            // Передаём сохранённый аргумент для поиска
+            const resumeTime = findTimeInFileView(movie.id, d);
             L('BTN resumeTime=' + Math.round(resumeTime));
 
             let playArg;
@@ -149,5 +169,5 @@
         });
     });
 
-    L('v22 loaded');
+    L('v23 loaded');
 })();
