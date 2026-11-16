@@ -1,85 +1,133 @@
-(function() {
+(function () {
     'use strict';
-    if (window.continue_series_debug_selector) return;
-    window.continue_series_debug_selector = true;
 
-    console.log('CS DIAG: Скрипт запущен');
+    if (window.continue_series_v4) return;
+    window.continue_series_v4 = true;
+
+    console.log('ContinueSeries V4: Скрипт запущен');
 
     const STORAGE_KEY = 'continue_series_data';
+
+    function saveData(cardId, data) {
+        try {
+            const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+            all[cardId] = data;
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+        } catch (e) { console.error('CS V4: save error', e); }
+    }
 
     function getData(cardId) {
         try {
             const all = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-            console.log('CS DIAG: getData для', cardId, '=', all[cardId]);
             return all[cardId] || null;
         } catch (e) { return null; }
     }
 
-    function injectButton() {
-        Lampa.Listener.follow('full', function(e) {
-            console.log('CS DIAG: Событие full, type =', e.type);
+    function formatTime(sec) {
+        if (!sec || isNaN(sec)) return '0:00';
+        const h = Math.floor(sec / 3600);
+        const m = Math.floor((sec % 3600) / 60);
+        const s = Math.floor(sec % 60);
+        return (h > 0 ? h + ':' : '') + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    }
 
-            // Ждём именно 'complite' (с опечаткой, как в Lampa)
-            if (e.type !== 'complite' || !e.data || !e.data.movie) return;
+    // --- Сохранение прогресса при старте плеера ---
+    function setupPlayerListener() {
+        if (!Lampa.Player || !Lampa.Player.listener) return;
+
+        Lampa.Player.listener.follow('start', function (data) {
+            console.log('CS V4: Player start', data);
+            if (!data.torrent_hash || !data.movie || data.movie.media_type !== 'tv') return;
+
+            const cardId = data.movie.id;
+            if (!cardId) return;
+
+            const saved = {
+                torrent_hash: data.torrent_hash,
+                file_index: data.id,
+                position: 0,
+                title: data.movie.name || data.movie.title
+            };
+
+            let video = null;
+
+            const onCanPlay = () => {
+                video = Lampa.PlayerVideo.video();
+                if (video && saved.position > 0) {
+                    video.currentTime = saved.position;
+                }
+                Lampa.PlayerVideo.listener.remove('canplay', onCanPlay);
+            };
+
+            const onTimeUpdate = () => {
+                if (video && !video.paused) {
+                    saved.position = video.currentTime;
+                    saveData(cardId, saved);
+                }
+            };
+
+            const onDestroy = () => {
+                if (video) {
+                    saved.position = video.currentTime;
+                    saveData(cardId, saved);
+                }
+                Lampa.PlayerVideo.listener.remove('canplay', onCanPlay);
+                Lampa.PlayerVideo.listener.remove('timeupdate', onTimeUpdate);
+                Lampa.Player.listener.remove('destroy', onDestroy);
+            };
+
+            Lampa.PlayerVideo.listener.follow('canplay', onCanPlay);
+            Lampa.PlayerVideo.listener.follow('timeupdate', onTimeUpdate);
+            Lampa.Player.listener.follow('destroy', onDestroy);
+
+            saveData(cardId, saved);
+            console.log('CS V4: Прогресс сохранён для сериала', cardId);
+        });
+    }
+
+    // --- Кнопка добавляется ВСЕГДА для сериалов ---
+    function setupCardButton() {
+        Lampa.Listener.follow('full', function (e) {
+            if (e.type !== 'complite') return;
+            if (!e.data || !e.data.movie) return;
 
             const movie = e.data.movie;
-            console.log('CS DIAG: Карточка открыта:', movie.name || movie.title, 'media_type:', movie.media_type);
+            if (movie.media_type !== 'tv') return;
 
-            if (movie.media_type !== 'tv') {
-                console.log('CS DIAG: Не сериал, пропускаем');
-                return;
-            }
+            // Убираем старую кнопку, чтобы не дублировать
+            $('.button--continue-series').remove();
 
-            // ПРИНУДИТЕЛЬНО пытаемся найти панель кнопок
-            const selectors = [
-                '.full-start-new__buttons',
-                '.full-buttons',
-                '.card-buttons',
-                '.full-start__buttons'
-            ];
+            // Добавляем кнопку — без каких-либо условий
+            $('.full-start-new__buttons').append(
+                `<div class="full-start__button selector button--continue-series">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M8 5v14l11-7z"/>
+                    </svg>
+                    <span>Продолжить</span>
+                </div>`
+            );
 
-            let $panel = null;
-            selectors.forEach(sel => {
-                const $el = $(sel);
-                console.log('CS DIAG: Селектор', sel, 'найдено элементов:', $el.length);
-                if ($el.length && !$panel) $panel = $el.first();
+            $('.button--continue-series').on('hover:enter', function () {
+                const saved = getData(movie.id);
+                console.log('CS V4: Нажата "Продолжить" для', movie.id, '| данные:', saved);
+
+                if (!saved) {
+                    Lampa.Noty.show('Нет сохранённого прогресса — запустите серию вручную один раз');
+                    return;
+                }
+
+                Lampa.Torrent.open(saved.torrent_hash, movie);
+                Lampa.Noty.show('Продолжаем с ' + formatTime(saved.position));
             });
 
-            if (!$panel) {
-                console.warn('CS DIAG: ПАНЕЛЬ КНОПОК НЕ НАЙДЕНА. Проверьте селекторы выше.');
-                return;
-            }
-
-            // Проверяем, нет ли уже кнопки
-            if ($panel.find('.cs-debug-btn').length) {
-                console.log('CS DIAG: Кнопка уже есть');
-                return;
-            }
-
-            // Добавляем кнопку ВСЕГДА (игнорируем getData для диагностики)
-            const $btn = $(`
-                <div class="full-start-new__button selector cs-debug-btn">
-                    <div class="full-start-new__button-icon">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M8 5v14l11-7z"/>
-                        </svg>
-                    </div>
-                    <div class="full-start-new__button-text">CS ДИАГ</div>
-                </div>
-            `);
-
-            $btn.on('hover:enter', function() {
-                Lampa.Noty.show('Кнопка CS ДИАГ нажата!');
-            });
-
-            $panel.prepend($btn);
-            console.log('CS DIAG: Кнопка добавлена в панель');
+            console.log('CS V4: Кнопка добавлена для', movie.name || movie.title);
         });
     }
 
     function init() {
-        injectButton();
-        console.log('CS DIAG: Инициализация завершена');
+        setupPlayerListener();
+        setupCardButton();
+        console.log('CS V4: Плагин инициализирован');
     }
 
     if (window.appready) init();
