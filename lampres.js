@@ -1,17 +1,17 @@
 (function () {
     'use strict';
-    if (window.cs_v9) return;
-    window.cs_v9 = true;
+    if (window.cs_v10) return;
+    window.cs_v10 = true;
 
-    const KEY = 'cs_v9_store';
-    const LOG_KEY = 'cs_v9_logs';
+    const KEY = 'cs_v10_store';
+    const LOG_KEY = 'cs_v10_logs';
 
     function L(m) {
-        console.log('CS9 ' + m);
+        console.log('CS10 ' + m);
         try {
             const arr = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
             arr.push(new Date().toLocaleTimeString() + ' ' + m);
-            if (arr.length > 100) arr.shift();
+            if (arr.length > 200) arr.shift();
             localStorage.setItem(LOG_KEY, JSON.stringify(arr));
         } catch(e) {}
     }
@@ -21,7 +21,7 @@
             const all = JSON.parse(localStorage.getItem(KEY) || '{}');
             all[String(id)] = data;
             localStorage.setItem(KEY, JSON.stringify(all));
-            L('SAVED id=' + id + ' hash=' + (data.hash || '').slice(0, 8) + ' idx=' + data.index);
+            L('SAVED id=' + id + ' hash=' + (data.hash||'').slice(0,8) + ' idx=' + data.index);
         } catch(e) { L('SAVE ERR ' + e.message); }
     }
 
@@ -29,100 +29,80 @@
         try { return JSON.parse(localStorage.getItem(KEY) || '{}')[String(id)] || null; } catch(e) { return null; }
     }
 
-    function hashFromUrl(url) {
-        if (!url) return null;
-        const m = String(url).match(/[?&]link=([a-f0-9]+)/i);
-        return m ? m[1] : null;
-    }
-
-    function indexFromUrl(url) {
-        if (!url) return 0;
-        const m = String(url).match(/[?&]index=(\d+)/i);
-        return m ? parseInt(m[1]) : 0;
-    }
-
     function isSeries(m) {
         if (!m) return false;
         return m.number_of_seasons > 0 || !!m.first_air_date || !!(m.name && !m.title);
     }
 
-    // ==== Способ 1: перехват Torrent.open ====
-    function hookTorrent() {
+    function currentMovie() {
         try {
-            if (!Lampa.Torrent || typeof Lampa.Torrent.open !== 'function') return false;
-            if (Lampa.Torrent.__hooked_v9) return true;
-            const orig = Lampa.Torrent.open;
-            Lampa.Torrent.open = function () {
-                const args = Array.prototype.slice.call(arguments);
-                L('TORRENT.OPEN argsLen=' + args.length + ' arg0=' + (typeof args[0]) + ' arg1type=' + (args[1] && typeof args[1]));
-                let hash = null, movie = null;
-                // Пробуем разные варианты сигнатуры
-                if (typeof args[0] === 'string') { hash = args[0]; movie = args[1]; }
-                else if (args[0] && typeof args[0] === 'object') {
-                    hash = args[0].hash || args[0].torrent_hash || args[0].magnet;
-                    movie = args[1] || args[0].movie || args[0].card;
-                }
-                L('TORRENT.OPEN hash=' + (hash ? String(hash).slice(0,10) : 'none') + ' movieId=' + (movie && movie.id) + ' series=' + isSeries(movie));
-                if (hash && movie && movie.id && isSeries(movie)) {
-                    const ex = get(movie.id) || {};
-                    save(movie.id, { hash: hash, index: ex.index || 0, title: movie.name || movie.title, time: ex.time || 0 });
-                }
+            const a = Lampa.Activity.active();
+            return a && (a.movie || a.card || a.card_data);
+        } catch(e) { return null; }
+    }
+
+    // === 1. Хук на Lampa.Player.play ===
+    function hookPlayerPlay() {
+        try {
+            if (!Lampa.Player || typeof Lampa.Player.play !== 'function') { L('no Lampa.Player.play'); return; }
+            if (Lampa.Player.__hooked_v10) return;
+            const orig = Lampa.Player.play;
+            Lampa.Player.play = function () {
+                L('PLAYER.PLAY argsLen=' + arguments.length + ' arg0Type=' + (arguments[0] && typeof arguments[0]));
+                try {
+                    const args = Array.prototype.slice.call(arguments);
+                    const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url);
+                    const movie = currentMovie();
+                    L('PLAYER.PLAY url=' + (url ? String(url).slice(0, 100) : 'none') + ' movieId=' + (movie && movie.id));
+                    if (url && movie && movie.id && isSeries(movie)) {
+                        const m = String(url).match(/[?&]link=([a-f0-9]+)/i);
+                        const i = String(url).match(/[?&]index=(\d+)/i);
+                        if (m) {
+                            const ex = get(movie.id) || {};
+                            save(movie.id, { hash: m[1], index: i ? parseInt(i[1]) : 0, title: movie.name || movie.title, time: ex.time || 0 });
+                        }
+                    }
+                } catch(e) { L('PLAYER.PLAY hook err: ' + e.message); }
                 return orig.apply(this, arguments);
             };
-            Lampa.Torrent.__hooked_v9 = true;
-            L('HOOKED Torrent.open OK');
-            return true;
-        } catch(e) { L('hookTorrent err: ' + e.message); return false; }
+            Lampa.Player.__hooked_v10 = true;
+            L('HOOKED Player.play OK');
+        } catch(e) { L('hookPlayerPlay err: ' + e.message); }
     }
 
-    // ==== Способ 2: Player.listener.start ====
-    function onPlayerStart(d, src) {
+    // === 2. Поллинг <video> ===
+    let last = { hash: null, id: null };
+    function pollVideo() {
         try {
-            const keys = d ? Object.keys(d).join(',') : 'null';
-            L(src + ' keys=' + keys.slice(0, 80));
-            const movie = (d && (d.card || d.movie)) || (Lampa.Activity.active() && Lampa.Activity.active().movie);
-            if (!movie || !movie.id) { L(src + ' no movie'); return; }
-            L(src + ' id=' + movie.id + ' series=' + isSeries(movie));
-            if (!isSeries(movie)) return;
-            let hash = (d && (d.torrent_hash || d.hash)) || hashFromUrl(d && d.url);
-            if (!hash && d && d.data) hash = d.data.hash || d.data.torrent_hash;
-            const idx = indexFromUrl(d && d.url) || (d && d.file_index) || (d && d.index) || 0;
-            if (!hash) { L(src + ' NO HASH url=' + ((d && d.url) || '').slice(0, 80)); return; }
-            L(src + ' hash=' + hash.slice(0, 10) + ' idx=' + idx);
+            const v = document.querySelector('video');
+            if (!v || !v.src) return;
+            const m = v.src.match(/[?&]link=([a-f0-9]+)/i);
+            if (!m) return;
+            const hash = m[1];
+            const iM = v.src.match(/[?&]index=(\d+)/i);
+            const idx = iM ? parseInt(iM[1]) : 0;
+            const movie = currentMovie();
+            if (!movie || !movie.id) return;
+            if (last.hash === hash && last.id === movie.id) return;
+            last = { hash, id: movie.id };
+            L('POLL src=' + v.src.slice(0, 120));
+            L('POLL hash=' + hash.slice(0, 10) + ' idx=' + idx + ' id=' + movie.id + ' series=' + isSeries(movie));
+            if (!isSeries(movie)) { L('POLL skip: not series'); return; }
             const ex = get(movie.id) || {};
-            save(movie.id, { hash: hash, index: idx || ex.index || 0, title: movie.name || movie.title, time: ex.time || 0 });
-        } catch(e) { L(src + ' err: ' + e.message); }
+            save(movie.id, { hash, index: idx, title: movie.name || movie.title, time: ex.time || 0 });
+        } catch(e) {}
     }
 
-    let attempts = 0;
-    function tryPlayerAttach() {
-        attempts++;
+    // === 3. Дамп доступных API ===
+    setTimeout(() => {
         try {
-            if (Lampa.Player && Lampa.Player.listener && typeof Lampa.Player.listener.follow === 'function') {
-                Lampa.Player.listener.follow('start', d => onPlayerStart(d, 'PLAYER.start'));
-                L('ATTACHED Player.start (try ' + attempts + ')');
-                return;
-            }
-        } catch(e) { L('attachPlayer err: ' + e.message); }
-        L('player try ' + attempts + ' Player=' + (typeof Lampa.Player) + ' listener=' + (Lampa.Player && typeof Lampa.Player.listener));
-        if (attempts < 30) setTimeout(tryPlayerAttach, 1000);
-    }
+            L('Lampa.Torrent keys: ' + Object.keys(Lampa.Torrent || {}).join(','));
+            L('Lampa.Player keys: ' + Object.keys(Lampa.Player || {}).slice(0, 40).join(','));
+            L('Lampa.PlayerVideo keys: ' + Object.keys(Lampa.PlayerVideo || {}).slice(0, 40).join(','));
+        } catch(e) {}
+    }, 2000);
 
-    // ==== Способ 3: глобальный Listener ====
-    function tryGlobalAttach() {
-        try {
-            if (Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
-                Lampa.Listener.follow('player', function (e) {
-                    if (e && (e.type === 'start' || e.type === 'play' || e.type === 'playstart')) {
-                        onPlayerStart(e, 'GLOBAL.player.' + e.type);
-                    }
-                });
-                L('ATTACHED Listener.player');
-            }
-        } catch(e) { L('global err: ' + e.message); }
-    }
-
-    // ==== Кнопка ====
+    // === Кнопка ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
@@ -134,24 +114,21 @@
             '<span>Продолжить</span></div>'
         );
         $('.button--continue-series').on('hover:enter', function () {
-            L('BTN click id=' + movie.id);
             const d = get(movie.id);
+            L('BTN click id=' + movie.id + ' data=' + (d ? 'yes hash=' + d.hash.slice(0,8) + ' idx=' + d.index : 'no'));
             if (!d) {
-                L('BTN no data, dumped log:');
+                L('--- DUMP last 20 log lines ---');
                 try {
                     const logs = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
-                    logs.slice(-15).forEach(x => console.log('CS9 DUMP: ' + x));
+                    logs.slice(-20).forEach(x => console.log('CS10 DUMP: ' + x));
                 } catch(e) {}
                 return;
             }
-            L('BTN open hash=' + d.hash.slice(0, 10) + ' idx=' + d.index);
             try { Lampa.Torrent.open(d.hash, movie); } catch(ex) { L('BTN err: ' + ex.message); }
         });
     });
 
-    L('v9 loaded');
-    tryPlayerAttach();
-    tryGlobalAttach();
-    // Пробуем хукнуть Torrent несколько раз, вдруг он позже появится
-    if (!hookTorrent()) { setTimeout(hookTorrent, 1000); setTimeout(hookTorrent, 3000); setTimeout(hookTorrent, 8000); }
+    hookPlayerPlay();
+    setInterval(pollVideo, 500);
+    L('v10 loaded');
 })();
