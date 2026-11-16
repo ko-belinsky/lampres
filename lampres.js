@@ -1,21 +1,19 @@
 (function () {
     'use strict';
-    if (window.cs_v24) return;
-    window.cs_v24 = true;
+    if (window.cs_v25) return;
+    window.cs_v25 = true;
 
-    const KEY = 'cs_v24_store';
-    let lastArg = null;
+    const KEY = 'cs_v25_store';
     let lastMovieId = null;
+    let pendingResume = null;
 
     function L() {
         var args = Array.prototype.slice.call(arguments);
-        args.unshift('CS24');
+        args.unshift('CS25');
         console.log.apply(console, args);
     }
-
     function save(id, data) {
-        try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); }
-        catch(e) { L('save err', e.message); }
+        try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) {}
     }
     function get(id) {
         try { return JSON.parse(localStorage.getItem(KEY)||'{}')[String(id)]||null; } catch(e) { return null; }
@@ -23,8 +21,8 @@
     function isSeries(m) { return m && (m.number_of_seasons > 0 || !!m.first_air_date || (m.name && !m.title)); }
     function currentMovie() { try { const a = Lampa.Activity.active(); return a && (a.movie || a.card || a.card_data); } catch(e) { return null; } }
 
-    // === 1. Хук Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v24) {
+    // === 1. Hook Player.play — запоминаем текущий movie.id ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v25) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -32,92 +30,80 @@
                     const movie = arg.card || arg.movie || currentMovie();
                     if (movie && movie.id && isSeries(movie)) {
                         lastMovieId = movie.id;
-                        lastArg = arg;
                         const prim = {};
                         for (const k in arg) {
                             const v = arg[k];
                             if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') prim[k] = v;
                         }
-                        // Сохраняем ID карточки и TMDB ID
-                        prim.__movieId = movie.id;
-                        prim.__tmdbId = movie.tmdb_id || movie.id;
-                        prim.__name = movie.original_name || movie.name || movie.title;
-                        prim.__time = 0;
+                        const ex = get(movie.id) || {};
+                        prim.__time = ex.__time || 0;
+                        prim.__duration = ex.__duration || 0;
+                        prim.__card_id = ex.__card_id || null;
                         save(movie.id, prim);
-                        L('PLAY saved id=' + movie.id, 'tmdb=' + prim.__tmdbId, 'name=' + prim.__name);
+                        L('PLAY saved id=' + movie.id);
                     }
                 }
             } catch(e) { L('hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v24 = true;
-        L('HOOKED');
+        Lampa.Player.__hooked_v25 = true;
+        L('HOOKED Player.play');
     }
 
-    // === 2. Поиск времени в file_view ===
-    function findTimeInFileView(d) {
-        try {
-            let profileId = '';
+    // === 2. Hook Timeline.update — Lampa сама даёт нам card_id и time ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.update === 'function' && !Lampa.Timeline.__hooked_v25_update) {
+        const origUpdate = Lampa.Timeline.update;
+        Lampa.Timeline.update = function () {
             try {
-                if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.account && Lampa.Account.Permit.account.profile) {
-                    profileId = Lampa.Account.Permit.account.profile.id;
+                const args = Array.prototype.slice.call(arguments);
+                const hash = args[0];
+                let time = 0, duration = 0;
+                if (typeof args[1] === 'number') time = args[1];
+                if (typeof args[2] === 'number') duration = args[2];
+                if (args[1] && typeof args[1] === 'object') {
+                    time = args[1].time || 0;
+                    duration = args[1].duration || 0;
                 }
-            } catch(e) {}
-            const storeKey = profileId ? 'file_view_' + profileId : 'file_view';
-            let store = null;
-            try { store = JSON.parse(localStorage.getItem(storeKey)); } catch(e) {}
-            if (!store || typeof store !== 'object') { L('store not found', storeKey); return 0; }
-
-            const season = d.season;
-            const episode = d.episode;
-            const originalName = d.__name || d.first_title || d.title;
-
-            // Формируем возможные card-значения
-            const cardCandidates = [];
-            if (d.__tmdbId) cardCandidates.push('tv_' + d.__tmdbId);
-            if (d.__movieId) cardCandidates.push('tv_' + d.__movieId);
-            L('card candidates:', cardCandidates.join(', '));
-
-            // Формируем возможные хэши
-            const hashCandidates = [];
-            if (Lampa.Utils && typeof Lampa.Utils.hash === 'function') {
-                const s = String(season || 1);
-                const e = String(episode || 1);
-                const name = originalName || '';
-                // Как в MyShows: hash("11" + name) для season<10 episode<10
-                hashCandidates.push(Lampa.Utils.hash(s + e + name));
-                hashCandidates.push(Lampa.Utils.hash([season || 1, (season>10?":":""), episode || 1, name].join("")));
-                hashCandidates.push(Lampa.Utils.hash(name));
-            }
-            L('hash candidates:', hashCandidates.map(h => String(h).slice(0,10)).join(', '));
-
-            // Проходим по всем записям
-            for (const k in store) {
-                const v = store[k];
-                if (!v || typeof v !== 'object') continue;
-                if (typeof v.time !== 'number' || v.time < 1) continue;
-
-                // Совпадение по card + season + episode
-                for (const cc of cardCandidates) {
-                    if (v.card === cc && v.season == season && v.episode == episode) {
-                        L('FOUND by card+se+ep, card=' + cc, 'time=' + Math.round(v.time));
-                        return v.time;
+                if (hash && time > 1 && lastMovieId) {
+                    const d = get(lastMovieId);
+                    if (d) {
+                        d.__time = time;
+                        d.__duration = duration || d.__duration || 0;
+                        d.__card_id = hash;
+                        save(lastMovieId, d);
+                        L('TU saved hash=' + String(hash).slice(0,8) + ' time=' + Math.round(time));
                     }
                 }
-                // Совпадение по хэшу
-                for (const h of hashCandidates) {
-                    if (String(k) === String(h)) {
-                        L('FOUND by hash=' + String(h).slice(0,10), 'time=' + Math.round(v.time));
-                        return v.time;
-                    }
-                }
-            }
-            L('NOT FOUND. store size:', Object.keys(store).length);
-        } catch(e) { L('findTime err', e.message); }
-        return 0;
+            } catch(e) { L('tu err', e.message); }
+            return origUpdate.apply(this, arguments);
+        };
+        Lampa.Timeline.__hooked_v25_update = true;
+        L('HOOKED Timeline.update');
     }
 
-    // === 3. Кнопка «Продолжить» ===
+    // === 3. Hook Timeline.view — подсовываем сохранённое время ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v25_view) {
+        const origView = Lampa.Timeline.view;
+        Lampa.Timeline.view = function (hash) {
+            let result;
+            try { result = origView.apply(this, arguments); } catch(e) { result = null; }
+            L('TV hash=' + String(hash||'').slice(0,16) + ' -> ' + (result ? Math.round(result.time||0)+'s' : 'null'));
+
+            if (pendingResume && pendingResume.movieId) {
+                L('TV OVERRIDE -> ' + Math.round(pendingResume.time) + 's');
+                return {
+                    time: pendingResume.time,
+                    duration: pendingResume.duration || (result && result.duration) || pendingResume.time + 3000,
+                    percent: 0
+                };
+            }
+            return result;
+        };
+        Lampa.Timeline.__hooked_v25_view = true;
+        L('HOOKED Timeline.view');
+    }
+
+    // === 4. Кнопка «Продолжить» ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
@@ -132,39 +118,32 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN click id=' + movie.id, 'data=' + (d ? 'yes' : 'no'));
+            L('BTN click id=' + movie.id, 'data=' + (d ? 'time=' + Math.round(d.__time||0) : 'no'));
             if (!d || !d.url) return;
 
-            const resumeTime = findTimeInFileView(d);
+            const resumeTime = d.__time || 0;
             L('BTN resumeTime=' + Math.round(resumeTime));
 
-            let playArg;
-            if (lastArg && lastArg.card && lastArg.card.id === movie.id) {
-                playArg = lastArg; L('using lastArg');
-            } else {
-                playArg = {};
-                for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
-                playArg.card = movie; playArg.movie = movie;
-                L('using storage');
-            }
-
-            Lampa.Player.play(playArg);
-
             if (resumeTime > 1) {
+                pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
+                L('BTN pendingResume SET');
                 setTimeout(function () {
-                    try {
-                        if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
-                            Lampa.PlayerVideo.to(resumeTime);
-                            L('PV.to(' + Math.round(resumeTime) + ')');
-                        } else if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.rewind === 'function') {
-                            Lampa.PlayerVideo.rewind(resumeTime);
-                            L('PV.rewind(' + Math.round(resumeTime) + ')');
-                        }
-                    } catch(e) { L('seek err', e.message); }
-                }, 3000);
+                    if (pendingResume && pendingResume.movieId === movie.id) {
+                        pendingResume = null;
+                        L('BTN pendingResume cleared');
+                    }
+                }, 15000);
             }
+
+            const playArg = {};
+            for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
+            playArg.card = movie;
+            playArg.movie = movie;
+
+            L('BTN play');
+            Lampa.Player.play(playArg);
         });
     });
 
-    L('v24 loaded');
+    L('v25 loaded');
 })();
