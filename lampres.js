@@ -46,7 +46,7 @@
                         prim.__timelineHash = ex.__timelineHash || null;
                         save(movie.id, prim);
                         try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
-                        L('PLAY id=' + movie.id);
+                        L('PLAY id=' + movie.id + ' hash=' + (prim.torrent_hash || '-') + ' file=' + (prim.file_index !== undefined ? prim.file_index : '-'));
                     }
                 }
             } catch(e) { L('hook err', e.message); }
@@ -116,18 +116,21 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
+            L('BTN id=' + movie.id + ' hash=' + (d ? (d.torrent_hash || '-') : 'no') + ' time=' + (d ? Math.round(d.__time||0) : 'no'));
             if (!d || !d.torrent_hash) return;
-        
+
+            // 1. Получаем список всех файлов в сохранённой раздаче
             Lampa.Torrent.files(d.torrent_hash, function(files) {
                 if (!files || !files.length) {
                     L('BTN: не удалось получить файлы раздачи');
                     return;
                 }
-        
+
+                // 2. Формируем массив для плейлиста
                 const playlistItems = files
-                    .filter(f => f.path && f.path.match(/\.(mkv|mp4|avi|ts)$/i)) // только видеофайлы
+                    .filter(f => f.path && f.path.match(/\.(mkv|mp4|avi|ts)$/i))
                     .map(f => ({
-                        url: Lampa.Torserver.streamUrl(d.torrent_hash, f.id), // URL для TorrServer
+                        url: Lampa.Torserver.streamUrl(d.torrent_hash, f.id),
                         title: f.path.split('/').pop(),
                         season: f.season,
                         episode: f.episode,
@@ -136,30 +139,48 @@
                         card: movie,
                         movie: movie
                     }));
-        
-                const startIndex = playlistItems.findIndex(item => item.file_index === d.file_index);
-                Lampa.Playlist.set(playlistItems); // очередь готова
-                if (startIndex >= 0) {
-                    Lampa.Playlist.select(startIndex); // выбираем нужную серию
+
+                if (!playlistItems.length) {
+                    L('BTN: нет видеофайлов в раздаче');
+                    return;
                 }
-        
+
+                // 3. Инициализируем плейлист, указав стартовый индекс
+                const startIndex = playlistItems.findIndex(item => item.file_index === d.file_index);
+                Lampa.Playlist.set(playlistItems);
+                if (startIndex >= 0) {
+                    Lampa.Playlist.select(startIndex);
+                }
+
+                // 4. Запускаем воспроизведение через штатный Player.play
                 const playArg = playlistItems[startIndex >= 0 ? startIndex : 0];
                 Lampa.Player.play(playArg);
-        
-                if (d.__time > 1) {
-                    pendingResume = { movieId: movie.id, time: d.__time, duration: d.__duration };
 
-            if (resumeTime > 1) {
-                setTimeout(function () {
-                    if (overrideUsed) { L('skip PV.to (override worked)'); return; }
-                    try {
-                        if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
-                            L('PV.to(' + Math.round(resumeTime) + ') fallback');
-                            Lampa.PlayerVideo.to(resumeTime);
+                // 5. Восстановление позиции (как в v27)
+                const resumeTime = d.__time || 0;
+                if (resumeTime > 1) {
+                    overrideUsed = false;
+                    pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
+                    L('pendingResume SET ' + Math.round(resumeTime));
+                    setTimeout(function () {
+                        if (pendingResume && pendingResume.movieId === movie.id) {
+                            pendingResume = null;
+                            L('pendingResume TIMEOUT (used=' + overrideUsed + ')');
                         }
-                    } catch(e) { L('PV.to err', e.message); }
-                }, 5000);
-            }
+                    }, 20000);
+
+                    // 6. Fallback через PlayerVideo.to, если перехват Timeline.view не сработал
+                    setTimeout(function () {
+                        if (overrideUsed) { L('skip PV.to (override worked)'); return; }
+                        try {
+                            if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
+                                L('PV.to(' + Math.round(resumeTime) + ') fallback');
+                                Lampa.PlayerVideo.to(resumeTime);
+                            }
+                        } catch(e) { L('PV.to err', e.message); }
+                    }, 5000);
+                }
+            });
         });
     });
 
