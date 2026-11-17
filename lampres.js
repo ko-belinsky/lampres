@@ -1,15 +1,15 @@
 (function () {
     'use strict';
-    if (window.cs_v34) return;
-    window.cs_v34 = true;
+    if (window.cs_v35) return;
+    window.cs_v35 = true;
 
-    const KEY = 'cs_v34_store';
+    const KEY = 'cs_v35_store';
     let lastMovieId = null;
     let pendingResume = null;
     let overrideUsed = false;
     let lastFvSnapshot = {};
 
-    function L() { console.log.apply(console, ['CS34'].concat([].slice.call(arguments))); }
+    function L() { console.log.apply(console, ['CS35'].concat([].slice.call(arguments))); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) { L('save err', e.message); }
@@ -28,40 +28,8 @@
         return 'file_view';
     }
 
-    // Дамп сигнатур API
-    setTimeout(function () {
-        try {
-            L('API play:', String(Lampa.Player.play).slice(0, 200).replace(/\s+/g, ' '));
-            L('API playlist:', String(Lampa.Player.playlist).slice(0, 200).replace(/\s+/g, ' '));
-            L('API runas:', String(Lampa.Player.runas || '').slice(0, 300).replace(/\s+/g, ' '));
-            L('API playdata:', String(Lampa.Player.playdata || '').slice(0, 200).replace(/\s+/g, ' '));
-        } catch(e) { L('dump err', e.message); }
-    }, 3000);
-
-    // Перехват runas и playdata — диагностика
-    if (Lampa.Player && typeof Lampa.Player.runas === 'function' && !Lampa.Player.__hooked_v34_runas) {
-        const origRunas = Lampa.Player.runas;
-        Lampa.Player.runas = function () {
-            const a = [].slice.call(arguments);
-            L('RUNAS called args=' + a.length + ' t0=' + typeof a[0] + ' t1=' + typeof a[1]);
-            return origRunas.apply(this, arguments);
-        };
-        Lampa.Player.__hooked_v34_runas = true;
-        L('HOOKED runas');
-    }
-    if (Lampa.Player && typeof Lampa.Player.playdata === 'function' && !Lampa.Player.__hooked_v34_playdata) {
-        const origPd = Lampa.Player.playdata;
-        Lampa.Player.playdata = function () {
-            const a = [].slice.call(arguments);
-            L('PLAYDATA called args=' + a.length + ' t0=' + typeof a[0]);
-            return origPd.apply(this, arguments);
-        };
-        Lampa.Player.__hooked_v34_playdata = true;
-        L('HOOKED playdata');
-    }
-
     // === 1. Перехват Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v34) {
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v35) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -86,12 +54,12 @@
             } catch(e) { L('play hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v34 = true;
+        Lampa.Player.__hooked_v35 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Перехват Player.playlist ===
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v34_pl) {
+    // === 2. Перехват Player.playlist (чтобы сохранять плейлист при ручном запуске) ===
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v35_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
@@ -101,7 +69,6 @@
 
             if (args.length > 0 && Array.isArray(args[0]) && args[0].length > 0 && lastMovieId) {
                 try {
-                    if (args[0][0]) L('PL item0 keys: ' + Object.keys(args[0][0]).join(','));
                     const stored = args[0].map(item => {
                         const o = {};
                         for (const k in item) {
@@ -118,7 +85,7 @@
             }
             return result;
         };
-        Lampa.Player.__hooked_v34_pl = true;
+        Lampa.Player.__hooked_v35_pl = true;
         L('HOOKED Player.playlist');
     }
 
@@ -146,7 +113,7 @@
     }, 2000);
 
     // === 4. Перехват Timeline.view ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v34) {
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v35) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -158,11 +125,11 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v34 = true;
+        Lampa.Timeline.__hooked_v35 = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 5. Универсальный поиск индекса ===
+    // === 5. Поиск индекса серии в плейлисте ===
     function findPlaylistIndex(playlist, d) {
         if (!playlist || !d) return -1;
         for (let i = 0; i < playlist.length; i++) {
@@ -171,9 +138,7 @@
             if (d.path && it.path && d.path === it.path) return i;
             if (d.url && it.url && d.url === it.url) return i;
             if (d.id !== undefined && d.id !== null) {
-                if (it.id === d.id) return i;
-                if (it.file_index === d.id) return i;
-                if (it.index === d.id) return i;
+                if (it.id === d.id || it.file_index === d.id || it.index === d.id) return i;
             }
         }
         return -1;
@@ -194,7 +159,7 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no') + ' fileIdx=' + (d && d.id !== undefined ? d.id : 'na') + ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0));
+            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no') + ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0));
             if (!d || !d.url) return;
 
             const resumeTime = d.__time || 0;
@@ -210,71 +175,47 @@
                 }, 20000);
             }
 
+            // Собираем аргумент для play()
+            const playArg = {};
+            for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
+            playArg.card = movie;
+            playArg.movie = movie;
+
+            // КЛЮЧЕВОЕ: передаём плейлист ВНУТРИ playArg
             if (d.__playlist && d.__playlist.length > 0) {
-                L('BTN use saved playlist items=' + d.__playlist.length);
-                playWithPlaylist(movie, d, d.__playlist, resumeTime);
+                const idx = findPlaylistIndex(d.__playlist, d);
+                const startIdx = idx >= 0 ? idx : 0;
+                // Помечаем selected
+                for (let i = 0; i < d.__playlist.length; i++) {
+                    d.__playlist[i].selected = (i === startIdx);
+                }
+                // Устанавливаем активный элемент как основной
+                Object.assign(playArg, d.__playlist[startIdx]);
+                playArg.card = movie;
+                playArg.movie = movie;
+                // ПЛЕЙЛИСТ ЦЕЛИКОМ
+                playArg.playlist = d.__playlist;
+                L('BTN with playlist items=' + d.__playlist.length + ' startIdx=' + startIdx);
             } else {
-                fallbackSingle(movie, d, resumeTime);
+                L('BTN no playlist, single');
+            }
+
+            Lampa.Player.play(playArg);
+
+            // Резервная перемотка
+            if (resumeTime > 1) {
+                setTimeout(function () {
+                    if (overrideUsed) { L('skip PV.to'); return; }
+                    try {
+                        if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
+                            L('PV.to(' + Math.round(resumeTime) + ') fallback');
+                            Lampa.PlayerVideo.to(resumeTime);
+                        }
+                    } catch(e) {}
+                }, 5000);
             }
         });
     });
 
-    function playWithPlaylist(movie, d, playlist, resumeTime) {
-        const idx = findPlaylistIndex(playlist, d);
-        const startIdx = idx >= 0 ? idx : 0;
-        L('findPlaylistIndex idx=' + idx + '/' + playlist.length + ' → startIdx=' + startIdx);
-
-        // Явно проставляем selected только на нужном элементе
-        for (let i = 0; i < playlist.length; i++) {
-            playlist[i].selected = (i === startIdx);
-        }
-
-        const playArg = Object.assign({}, playlist[startIdx]);
-        playArg.card = movie;
-        playArg.movie = movie;
-
-        // ПОРЯДОК КАК В LAMPA: сначала play, потом playlist
-        L('ORD play → playlist');
-        try {
-            Lampa.Player.play(playArg);
-            L('play done');
-        } catch(e) { L('play err', e.message); }
-
-        try {
-            if (Lampa.Player && typeof Lampa.Player.playlist === 'function') {
-                Lampa.Player.playlist(playlist);
-                L('playlist done');
-            }
-        } catch(e) { L('pl err', e.message); }
-
-        if (resumeTime > 1) {
-            setTimeout(function () {
-                if (overrideUsed) { L('skip PV.to'); return; }
-                try {
-                    if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
-                        L('PV.to(' + Math.round(resumeTime) + ') fallback');
-                        Lampa.PlayerVideo.to(resumeTime);
-                    }
-                } catch(e) {}
-            }, 5000);
-        }
-    }
-
-    function fallbackSingle(movie, d, resumeTime) {
-        L('FALLBACK single');
-        const playArg = {};
-        for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
-        playArg.card = movie; playArg.movie = movie;
-        Lampa.Player.play(playArg);
-        if (resumeTime > 1) {
-            setTimeout(function () {
-                if (overrideUsed) return;
-                try {
-                    if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') Lampa.PlayerVideo.to(resumeTime);
-                } catch(e) {}
-            }, 5000);
-        }
-    }
-
-    L('v34 loaded');
+    L('v35 loaded');
 })();
