@@ -118,6 +118,212 @@
             const d = get(movie.id);
             L('BTN id=' + movie.id + ' hash=' + (d ? (d.torrent_hash || '-') : 'no') + ' time=' + (d ? Math.round(d.__time||0) : 'no'));
             if (!d || !d.torrent_hash) return;
+            if (!Lampa.Torserver || typeof Lampa.Torserver.files !== 'function' || typeof Lampa.Torserver.stream !== 'function') {
+                L('BTN: Lampa.Torserver недоступен в этой сборке');
+                return;
+            }
+
+            // Опрашиваем TorrServer, пока не придёт список файлов (раздача может ещё прогружаться)
+            let attempts = 0;
+            const maxAttempts = 20; // ~40 секунд
+
+            const loadFiles = function () {
+                attempts++;
+                Lampa.Torserver.files(d.torrent_hash, function (json) {
+                    const stats = (json && json.file_stats) || [];
+                    const files = stats.filter(f => f.path && f.path.match(/\.(mkv|mp4|avi|ts)$/i));
+                    if (!files.length) {
+                        if (attempts < maxAttempts) { L('BTN: файлы не готовы, повтор ' + attempts); setTimeout(loadFiles, 2000); }
+                        else L('BTN: раздача не прогрузилась за ' + attempts + ' попыток');
+                        return;
+                    }
+
+                    // Формируем массив для плейлиста
+                    const playlistItems = files.map(f => {
+                        const item = {
+                            url: Lampa.Torserver.stream(f.path, d.torrent_hash, f.id),
+                            title: f.path.split('/').pop(),
+                            torrent_hash: d.torrent_hash,
+                            file_index: f.id,
+                            card: movie,
+                            movie: movie
+                        };
+                        if (f.season !== undefined) item.season = f.season;
+                        if (f.episode !== undefined) item.episode = f.episode;
+                        return item;
+                    });
+
+                    // Инициализируем плейлист, указав стартовый индекс
+                    const startIndex = d.file_index !== undefined
+                        ? playlistItems.findIndex(item => item.file_index === d.file_index)
+                        : -1;
+                    if (Lampa.Playlist && typeof Lampa.Playlist.set === 'function') {
+                        Lampa.Playlist.set(playlistItems);
+                        if (startIndex >= 0 && typeof Lampa.Playlist.select === 'function') {
+                            Lampa.Playlist.select(startIndex);
+                        }
+                    } else {
+                        L('BTN: Lampa.Playlist недоступен, играю одиночный файл');
+                    }
+
+                    // Запускаем воспроизведение
+                    const playArg = playlistItems[startIndex >= 0 ? startIndex : 0];
+                    Lampa.Player.play(playArg);
+
+                    // Восстановление позиции (как в v27)
+                    const resumeTime = d.__time || 0;
+                    if (resumeTime > 1) {
+                        overrideUsed = false;
+                        pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
+                        L('pendingResume SET ' + Math.round(resumeTime));
+                        setTimeout(function () {
+                            if (pendingResume && pendingResume.movieId === movie.id) {
+                                pendingResume = null;
+                                L('pendingResume TIMEOUT (used=' + overrideUsed + ')');
+                            }
+                        }, 20000);
+
+                        setTimeout(function () {
+                            if (overrideUsed) { L('skip PV.to (override worked)'); return; }
+                            try {
+                                if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
+                                    L('PV.to(' + Math.round(resumeTime) + ') fallback');
+                                    Lampa.PlayerVideo.to(resumeTime);
+                                }
+                            } catch(e) { L('PV.to err', e.message); }
+                        }, 5000);
+                    }
+                }, function (err) {
+                    L('BTN: ошибка запроса файлов (' + attempts + '): ' + (err && err.message ? err.message : err));
+                    if (attempts < maxAttempts) setTimeout(loadFiles, 2000);
+                });
+            };
+            loadFiles();
+        });
+    });
+
+    L('v27 loaded');
+})();
+(function () {
+    'use strict';
+    if (window.cs_v27) return;
+    window.cs_v27 = true;
+
+    const KEY = 'cs_v27_store';
+    let lastMovieId = null;
+    let pendingResume = null;
+    let overrideUsed = false;
+    let lastFvSnapshot = {};
+
+    function L() { console.log.apply(console, ['CS27'].concat([].slice.call(arguments))); }
+    function save(id, data) {
+        try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) {}
+    }
+    function get(id) {
+        try { return JSON.parse(localStorage.getItem(KEY)||'{}')[String(id)]||null; } catch(e) { return null; }
+    }
+    function isSeries(m) { return m && (m.number_of_seasons > 0 || !!m.first_air_date || (m.name && !m.title)); }
+    function currentMovie() { try { const a = Lampa.Activity.active(); return a && (a.movie || a.card || a.card_data); } catch(e) { return null; } }
+    function getFvKey() {
+        try {
+            if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.account && Lampa.Account.Permit.account.profile) {
+                return 'file_view_' + Lampa.Account.Permit.account.profile.id;
+            }
+        } catch(e) {}
+        return 'file_view';
+    }
+
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v27) {
+        const orig = Lampa.Player.play;
+        Lampa.Player.play = function (arg) {
+            try {
+                if (arg && typeof arg === 'object' && arg.url) {
+                    const movie = arg.card || arg.movie || currentMovie();
+                    if (movie && movie.id && isSeries(movie)) {
+                        lastMovieId = movie.id;
+                        const prim = {};
+                        for (const k in arg) {
+                            const v = arg[k];
+                            if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') prim[k] = v;
+                        }
+                        const ex = get(movie.id) || {};
+                        prim.__time = ex.__time || 0;
+                        prim.__duration = ex.__duration || 0;
+                        prim.__timelineHash = ex.__timelineHash || null;
+                        save(movie.id, prim);
+                        try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
+                        L('PLAY id=' + movie.id + ' hash=' + (prim.torrent_hash || '-') + ' file=' + (prim.file_index !== undefined ? prim.file_index : '-'));
+                    }
+                }
+            } catch(e) { L('hook err', e.message); }
+            return orig.apply(this, arguments);
+        };
+        Lampa.Player.__hooked_v27 = true;
+        L('HOOKED Player.play');
+    }
+
+    setInterval(function () {
+        if (!lastMovieId) return;
+        try {
+            const store = JSON.parse(localStorage.getItem(getFvKey()) || '{}');
+            let best = null;
+            for (const hash in store) {
+                const v = store[hash];
+                if (!v || !v.time) continue;
+                const prev = lastFvSnapshot[hash];
+                const prevTime = prev ? (prev.time || 0) : -1;
+                if (Math.abs(prevTime - v.time) > 1) {
+                    if (!best || v.time > (best.time || 0)) {
+                        best = { hash, time: v.time, duration: v.duration };
+                    }
+                }
+            }
+            if (best) {
+                const d = get(lastMovieId);
+                if (d) {
+                    d.__timelineHash = best.hash;
+                    d.__time = best.time;
+                    d.__duration = best.duration || d.__duration || 0;
+                    save(lastMovieId, d);
+                    L('FV hash=' + best.hash.slice(0,10) + ' time=' + Math.round(best.time));
+                }
+            }
+            lastFvSnapshot = store;
+        } catch(e) {}
+    }, 2000);
+
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v27_view) {
+        const origView = Lampa.Timeline.view;
+        Lampa.Timeline.view = function (hash) {
+            let result;
+            try { result = origView.apply(this, arguments); } catch(e) { result = null; }
+            if (pendingResume && pendingResume.time > 1) {
+                overrideUsed = true;
+                L('TV OVERRIDE -> ' + Math.round(pendingResume.time));
+                return { time: pendingResume.time, duration: pendingResume.duration || (pendingResume.time + 3000), percent: 0 };
+            }
+            return result;
+        };
+        Lampa.Timeline.__hooked_v27_view = true;
+        L('HOOKED Timeline.view');
+    }
+
+    Lampa.Listener.follow('full', function (e) {
+        if (e.type !== 'complite' || !e.data || !e.data.movie) return;
+        const movie = e.data.movie;
+        if (!isSeries(movie)) return;
+
+        $('.button--continue-series').remove();
+        $('.full-start-new__buttons').append(
+            '<div class="full-start__button selector button--continue-series">' +
+            '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
+            '<span>Продолжить</span></div>'
+        );
+
+        $('.button--continue-series').on('hover:enter', function () {
+            const d = get(movie.id);
+            L('BTN id=' + movie.id + ' hash=' + (d ? (d.torrent_hash || '-') : 'no') + ' time=' + (d ? Math.round(d.__time||0) : 'no'));
+            if (!d || !d.torrent_hash) return;
 
             // 1. Получаем список всех файлов в сохранённой раздаче
             Lampa.Torrent.files(d.torrent_hash, function(files) {
