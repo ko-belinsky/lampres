@@ -1,15 +1,15 @@
 (function () {
     'use strict';
-    if (window.cs_v31) return;
-    window.cs_v31 = true;
+    if (window.cs_v32) return;
+    window.cs_v32 = true;
 
-    const KEY = 'cs_v31_store';
+    const KEY = 'cs_v32_store';
     let lastMovieId = null;
     let pendingResume = null;
     let overrideUsed = false;
     let lastFvSnapshot = {};
 
-    function L() { console.log.apply(console, ['CS31'].concat([].slice.call(arguments))); }
+    function L() { console.log.apply(console, ['CS32'].concat([].slice.call(arguments))); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) { L('save err', e.message); }
@@ -28,8 +28,8 @@
         return 'file_view';
     }
 
-    // === 1. Перехват Player.play (сохранение контекста) ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v31) {
+    // === 1. Перехват Player.play ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v32) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -45,52 +45,58 @@
                         const ex = get(movie.id) || {};
                         prim.__time = ex.__time || 0;
                         prim.__duration = ex.__duration || 0;
+                        prim.__playlist = ex.__playlist || null;
                         save(movie.id, prim);
                         try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
                         L('PLAY id=' + movie.id);
                     }
                 }
-            } catch(e) { L('hook err', e.message); }
+            } catch(e) { L('play hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v31 = true;
+        Lampa.Player.__hooked_v32 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Перехват Playlist.set — сохраняем плейлист, который строит Lampa ===
-    if (Lampa.Playlist && typeof Lampa.Playlist.set === 'function' && !Lampa.Playlist.__hooked_v31) {
-        const origSet = Lampa.Playlist.set;
-        Lampa.Playlist.set = function (playlist) {
+    // === 2. Перехват Player.playlist (геттер/сеттер) ===
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v32_pl) {
+        const origPl = Lampa.Player.playlist;
+        Lampa.Player.playlist = function () {
+            const args = [].slice.call(arguments);
+            let result;
             try {
-                if (Array.isArray(playlist) && playlist.length > 0) {
-                    const movie = currentMovie();
-                    if (movie && movie.id && isSeries(movie)) {
-                        // Сохраняем плейлист (только сериализуемые поля)
-                        const stored = playlist.map(item => {
-                            const o = {};
-                            for (const k in item) {
-                                const v = item[k];
-                                if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') o[k] = v;
-                            }
-                            return o;
-                        });
-                        const d = get(movie.id) || {};
-                        d.__playlist = stored;
-                        // Запоминаем, какой элемент был активен
-                        const activeIdx = playlist.findIndex(i => i.selected);
-                        if (activeIdx >= 0) d.__playlistActive = activeIdx;
-                        save(movie.id, d);
-                        L('PLAYLIST saved id=' + movie.id + ' items=' + stored.length + ' active=' + activeIdx);
-                    }
+                if (args.length > 0) {
+                    L('Pl.set arg isArr=' + Array.isArray(args[0]) + ' len=' + (Array.isArray(args[0]) ? args[0].length : 'na'));
                 }
-            } catch(e) { L('playlist hook err', e.message); }
-            return origSet.apply(this, arguments);
+                result = origPl.apply(this, args);
+            } catch(e) { L('pl call err', e.message); return; }
+
+            // Если это установка — читаем и сохраняем
+            if (args.length > 0 && Array.isArray(args[0]) && args[0].length > 0 && lastMovieId) {
+                try {
+                    const stored = args[0].map(item => {
+                        const o = {};
+                        for (const k in item) {
+                            const v = item[k];
+                            if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') o[k] = v;
+                        }
+                        return o;
+                    });
+                    const d = get(lastMovieId) || {};
+                    d.__playlist = stored;
+                    save(lastMovieId, d);
+                    L('PLAYLIST saved id=' + lastMovieId + ' items=' + stored.length);
+                } catch(e) { L('pl save err', e.message); }
+            }
+            return result;
         };
-        Lampa.Playlist.__hooked_v31 = true;
-        L('HOOKED Playlist.set');
+        Lampa.Player.__hooked_v32_pl = true;
+        L('HOOKED Player.playlist');
+    } else {
+        L('Player.playlist NOT FOUND');
     }
 
-    // === 3. Опрос file_view для сохранения прогресса (как в v27) ===
+    // === 3. Опрос file_view ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -113,8 +119,8 @@
         } catch(e) {}
     }, 2000);
 
-    // === 4. Перехват Timeline.view для перемотки (как в v27) ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v31_view) {
+    // === 4. Перехват Timeline.view ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v32) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -126,11 +132,37 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v31_view = true;
+        Lampa.Timeline.__hooked_v32 = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 5. Кнопка «Продолжить» ===
+    // === 5. Прямой запрос файлов у TorrServer ===
+    function fetchTorrServerFiles(host, hash, onOk, onErr) {
+        L('fetch /torrents');
+        fetch(host + '/torrents', { method: 'GET' })
+            .then(r => { L('resp status=' + r.status); return r.text(); })
+            .then(text => {
+                try {
+                    const data = JSON.parse(text);
+                    // TorrServer может вернуть массив или объект
+                    const list = Array.isArray(data) ? data : (data.torrents || []);
+                    L('torrents in server: ' + list.length);
+                    let found = null;
+                    for (const t of list) {
+                        const th = t.hash || t.Hash || '';
+                        if (String(th).toLowerCase() === String(hash).toLowerCase()) { found = t; break; }
+                    }
+                    if (!found) { L('torrent not found on server'); onErr(); return; }
+                    L('torrent found, keys=' + Object.keys(found).join(','));
+                    const files = found.file_stats || found.FileStats || [];
+                    L('file_stats: ' + files.length);
+                    onOk(files, host);
+                } catch(e) { L('parse err: ' + e.message); onErr(); }
+            })
+            .catch(e => { L('fetch err: ' + e.message); onErr(); });
+    }
+
+    // === 6. Кнопка «Продолжить» ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
@@ -145,8 +177,8 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no'));
-            if (!d) return;
+            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no') + ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0));
+            if (!d || !d.url) return;
 
             const resumeTime = d.__time || 0;
             overrideUsed = false;
@@ -161,36 +193,68 @@
                 }, 20000);
             }
 
-            // Приоритет 1: восстановить сохранённый плейлист
             if (d.__playlist && d.__playlist.length > 0) {
-                L('BTN restore playlist items=' + d.__playlist.length);
-                try {
-                    Lampa.Playlist.set(d.__playlist);
-                    const idx = d.__playlistActive || 0;
-                    const item = d.__playlist[idx];
-                    L('BTN play from playlist idx=' + idx + ' url=' + String(item.url).slice(0, 100));
-                    Lampa.Player.play(item);
-                } catch(e) { L('playlist restore err: ' + e.message); fallbackSingle(movie, d, resumeTime); }
-            } else if (d.torrent_hash && d.url) {
-                // Приоритет 2: fallback на одиночный файл (как в v27)
-                L('BTN no playlist, single fallback');
-                fallbackSingle(movie, d, resumeTime);
-            }
-
-            // Резервная перемотка
-            if (resumeTime > 1) {
-                setTimeout(function () {
-                    if (overrideUsed) { L('skip PV.to (override worked)'); return; }
-                    try {
-                        if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
-                            L('PV.to(' + Math.round(resumeTime) + ') fallback');
-                            Lampa.PlayerVideo.to(resumeTime);
-                        }
-                    } catch(e) { L('PV.to err', e.message); }
-                }, 5000);
+                // Сценарий А: плейлист уже сохранён
+                L('BTN use saved playlist items=' + d.__playlist.length);
+                playWithPlaylist(movie, d, d.__playlist, resumeTime);
+            } else {
+                // Сценарий Б: получаем файлы напрямую у TorrServer
+                const hostMatch = String(d.url).match(/^(https?:\/\/[^/]+)/);
+                if (!hostMatch) { L('BTN no host'); fallbackSingle(movie, d, resumeTime); return; }
+                const host = hostMatch[1];
+                fetchTorrServerFiles(host, d.torrent_hash, function (files, srvHost) {
+                    if (!files || !files.length) { fallbackSingle(movie, d, resumeTime); return; }
+                    const videos = files.filter(f => f.path && f.path.match(/\.(mkv|mp4|avi|ts|m4v)$/i));
+                    L('video files: ' + videos.length);
+                    if (!videos.length) { fallbackSingle(movie, d, resumeTime); return; }
+                    const playlist = videos.map(f => {
+                        const o = {};
+                        o.url = srvHost + '/stream/' + encodeURIComponent(f.path).replace(/%2F/g, '/') + '?link=' + d.torrent_hash + '&index=' + f.id + '&play';
+                        o.title = f.path.split('/').pop();
+                        o.torrent_hash = d.torrent_hash;
+                        o.file_index = f.id;
+                        o.path = f.path;
+                        return o;
+                    });
+                    d.__playlist = playlist;
+                    save(movie.id, d);
+                    playWithPlaylist(movie, d, playlist, resumeTime);
+                }, function () {
+                    fallbackSingle(movie, d, resumeTime);
+                });
             }
         });
     });
+
+    function playWithPlaylist(movie, d, playlist, resumeTime) {
+        let idx = 0;
+        for (let i = 0; i < playlist.length; i++) {
+            if (playlist[i].file_index === d.id) { idx = i; break; }
+        }
+        L('play playlist idx=' + idx + '/' + playlist.length);
+        try {
+            if (Lampa.Player && typeof Lampa.Player.playlist === 'function') {
+                Lampa.Player.playlist(playlist);
+                L('Player.playlist set, len=' + playlist.length);
+            }
+        } catch(e) { L('pl err', e.message); }
+        const playArg = Object.assign({}, playlist[idx]);
+        playArg.card = movie;
+        playArg.movie = movie;
+        Lampa.Player.play(playArg);
+
+        if (resumeTime > 1) {
+            setTimeout(function () {
+                if (overrideUsed) { L('skip PV.to'); return; }
+                try {
+                    if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
+                        L('PV.to(' + Math.round(resumeTime) + ') fallback');
+                        Lampa.PlayerVideo.to(resumeTime);
+                    }
+                } catch(e) {}
+            }, 5000);
+        }
+    }
 
     function fallbackSingle(movie, d, resumeTime) {
         L('FALLBACK single');
@@ -198,7 +262,15 @@
         for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
         playArg.card = movie; playArg.movie = movie;
         Lampa.Player.play(playArg);
+        if (resumeTime > 1) {
+            setTimeout(function () {
+                if (overrideUsed) return;
+                try {
+                    if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') Lampa.PlayerVideo.to(resumeTime);
+                } catch(e) {}
+            }, 5000);
+        }
     }
 
-    L('v31 loaded');
+    L('v32 loaded');
 })();
