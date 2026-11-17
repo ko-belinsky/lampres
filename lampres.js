@@ -1,17 +1,16 @@
 (function () {
     'use strict';
-    if (window.cs_v29) return;
-    window.cs_v29 = true;
+    if (window.cs_v30) return;
+    window.cs_v30 = true;
 
-    const KEY = 'cs_v29_store';
+    const KEY = 'cs_v30_store';
     let lastMovieId = null;
     let pendingResume = null;
     let overrideUsed = false;
     let lastFvSnapshot = {};
 
-    // Логирование в отдельную группу CS29
     function L() {
-        console.log.apply(console, ['CS29'].concat([].slice.call(arguments)));
+        console.log.apply(console, ['CS30'].concat([].slice.call(arguments)));
     }
 
     function save(id, data) {
@@ -48,8 +47,8 @@
         return 'file_view';
     }
 
-    // === 1. Перехват Player.play — сохраняем контекст ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v29) {
+    // === 1. Перехват Player.play (сохранение контекста) ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v30) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -60,29 +59,24 @@
                         const prim = {};
                         for (const k in arg) {
                             const v = arg[k];
-                            if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
-                                prim[k] = v;
-                            }
+                            if (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') prim[k] = v;
                         }
                         const ex = get(movie.id) || {};
                         prim.__time = ex.__time || 0;
                         prim.__duration = ex.__duration || 0;
-                        prim.__timelineHash = ex.__timelineHash || null;
                         save(movie.id, prim);
-                        try {
-                            lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}');
-                        } catch (e) { lastFvSnapshot = {}; }
+                        try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch (e) { lastFvSnapshot = {}; }
                         L('PLAY id=' + movie.id);
                     }
                 }
             } catch (e) { L('hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v29 = true;
+        Lampa.Player.__hooked_v30 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Опрос file_view для сохранения прогресса (как в v27) ===
+    // === 2. Опрос file_view для сохранения прогресса ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -94,27 +88,24 @@
                 const prev = lastFvSnapshot[hash];
                 const prevTime = prev ? (prev.time || 0) : -1;
                 if (Math.abs(prevTime - v.time) > 1) {
-                    if (!best || v.time > (best.time || 0)) {
-                        best = { hash, time: v.time, duration: v.duration };
-                    }
+                    if (!best || v.time > (best.time || 0)) best = { hash, time: v.time, duration: v.duration };
                 }
             }
             if (best) {
                 const d = get(lastMovieId);
                 if (d) {
-                    d.__timelineHash = best.hash;
                     d.__time = best.time;
                     d.__duration = best.duration || d.__duration || 0;
                     save(lastMovieId, d);
-                    L('FV hash=' + best.hash.slice(0, 10) + ' time=' + Math.round(best.time));
+                    L('FV time=' + Math.round(best.time));
                 }
             }
             lastFvSnapshot = store;
         } catch (e) {}
     }, 2000);
 
-    // === 3. Перехват Timeline.view для принудительной перемотки ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v29_view) {
+    // === 3. Перехват Timeline.view для перемотки ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v30_view) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -122,19 +113,15 @@
             if (pendingResume && pendingResume.time > 1) {
                 overrideUsed = true;
                 L('TV OVERRIDE -> ' + Math.round(pendingResume.time));
-                return {
-                    time: pendingResume.time,
-                    duration: pendingResume.duration || (pendingResume.time + 3000),
-                    percent: 0
-                };
+                return { time: pendingResume.time, duration: pendingResume.duration || (pendingResume.time + 3000), percent: 0 };
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v29_view = true;
+        Lampa.Timeline.__hooked_v30_view = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 4. Кнопка «Продолжить» с плейлистом ===
+    // === 4. Кнопка «Продолжить» ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
@@ -154,7 +141,6 @@
 
             const resumeTime = d.__time || 0;
             overrideUsed = false;
-
             if (resumeTime > 1) {
                 pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
                 L('pendingResume SET ' + Math.round(resumeTime));
@@ -166,111 +152,104 @@
                 }, 20000);
             }
 
-            // Получаем список файлов раздачи через Torserver
-            L('BTN запрос файлов торрента hash=' + d.torrent_hash.slice(0, 8));
-            Lampa.Torserver.files(d.torrent_hash, function (filesData) {
-                try {
-                    const files = (filesData && filesData.file_stats) ? filesData.file_stats : [];
-                    L('BTN файлов получено: ' + files.length);
-                    if (!files.length) {
-                        L('BTN: пустой список файлов, запускаем одиночный URL');
-                        fallbackSingle(movie, d, resumeTime);
-                        return;
-                    }
-
-                    // Фильтруем только видеофайлы
-                    const videoFiles = files.filter(function (f) {
-                        return f.path && f.path.match(/\.(mkv|mp4|avi|ts|m4v)$/i);
-                    });
-                    L('BTN видеофайлов: ' + videoFiles.length);
-                    if (!videoFiles.length) {
-                        L('BTN: нет видеофайлов, fallback');
-                        fallbackSingle(movie, d, resumeTime);
-                        return;
-                    }
-
-                    // Строим элементы плейлиста
-                    const playlistItems = videoFiles.map(function (f) {
-                        const streamUrl = Lampa.Torserver.stream(f.path, d.torrent_hash, f.id);
-                        return {
-                            url: streamUrl,
-                            title: f.path.split('/').pop(),
-                            torrent_hash: d.torrent_hash,
-                            file_index: f.id,
-                            card: movie,
-                            movie: movie,
-                            season: f.season,
-                            episode: f.episode
-                        };
-                    });
-
-                    // Инициализируем плейлист
-                    if (Lampa.Playlist && typeof Lampa.Playlist.set === 'function') {
-                        Lampa.Playlist.set(playlistItems);
-                        L('Playlist.set() вызван, элементов: ' + playlistItems.length);
-                    } else {
-                        L('Lampa.Playlist.set недоступен — плейлист не создан');
-                    }
-
-                    // Находим сохранённую серию по индексу файла
-                    let startIndex = playlistItems.findIndex(function (item) {
-                        return item.file_index === d.id;
-                    });
-                    if (startIndex < 0) startIndex = 0;
-
-                    L('BTN startIndex=' + startIndex + ' file_index=' + d.id);
-
-                    // Выбираем элемент в плейлисте (если есть API select)
-                    if (Lampa.Playlist && typeof Lampa.Playlist.select === 'function') {
-                        try {
-                            Lampa.Playlist.select(startIndex);
-                            L('Playlist.select(' + startIndex + ')');
-                        } catch (e) { L('select err', e.message); }
-                    }
-
-                    // Запускаем выбранный элемент
-                    const playArg = playlistItems[startIndex];
-                    L('BTN play url=' + playArg.url.slice(0, 100));
-                    Lampa.Player.play(playArg);
-
-                    // Резервная перемотка, если override не сработал
-                    if (resumeTime > 1) {
-                        setTimeout(function () {
-                            if (overrideUsed) {
-                                L('skip PV.to (override worked)');
-                                return;
-                            }
-                            try {
-                                if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
-                                    L('PV.to(' + Math.round(resumeTime) + ') fallback');
-                                    Lampa.PlayerVideo.to(resumeTime);
-                                }
-                            } catch (e) { L('PV.to err', e.message); }
-                        }, 5000);
-                    }
-                } catch (e) {
-                    L('files callback err: ' + e.message);
-                    fallbackSingle(movie, d, resumeTime);
-                }
-            }, function (err) {
-                L('Torserver.files ошибка: ' + (err ? err.message || err : 'unknown'));
-                fallbackSingle(movie, d, resumeTime);
-            });
+            // Запускаем опрос файлов торрента (как в Lampa)
+            pollTorserverFiles(movie, d, resumeTime, 0);
         });
     });
 
-    // === 5. Резервный запуск (одиночный файл), если плейлист не удался ===
+    // === 5. Опрос файлов TorrServer ===
+    function pollTorserverFiles(movie, d, resumeTime, attempt) {
+        attempt++;
+        L('BTN запрос файлов, попытка ' + attempt);
+        Lampa.Torserver.files(d.torrent_hash, function (filesData) {
+            try {
+                const files = (filesData && filesData.file_stats) ? filesData.file_stats : [];
+                L('BTN файлов получено: ' + files.length);
+                if (!files.length) {
+                    if (attempt < 15) {
+                        setTimeout(function () { pollTorserverFiles(movie, d, resumeTime, attempt); }, 2000);
+                    } else {
+                        L('BTN: пустой список файлов после 15 попыток, fallback');
+                        fallbackSingle(movie, d, resumeTime);
+                    }
+                    return;
+                }
+
+                const videoFiles = files.filter(function (f) {
+                    return f.path && f.path.match(/\.(mkv|mp4|avi|ts|m4v)$/i);
+                });
+                L('BTN видеофайлов: ' + videoFiles.length);
+                if (!videoFiles.length) {
+                    fallbackSingle(movie, d, resumeTime);
+                    return;
+                }
+
+                // Строим плейлист
+                const playlist = videoFiles.map(function (f) {
+                    return {
+                        url: Lampa.Torserver.stream(f.path, d.torrent_hash, f.id),
+                        title: f.path.split('/').pop(),
+                        torrent_hash: d.torrent_hash,
+                        file_index: f.id,
+                        card: movie,
+                        movie: movie,
+                        season: f.season,
+                        episode: f.episode
+                    };
+                });
+
+                // Передаём плейлист в Lampa
+                if (Lampa.Player && typeof Lampa.Player.playlist === 'function') {
+                    Lampa.Player.playlist(playlist);
+                    L('Player.playlist() вызван, элементов: ' + playlist.length);
+                } else {
+                    L('Player.playlist недоступен');
+                }
+
+                // Находим сохранённую серию
+                let startIndex = playlist.findIndex(function (item) { return item.file_index === d.id; });
+                if (startIndex < 0) startIndex = 0;
+                L('BTN startIndex=' + startIndex + ' file_index=' + d.id);
+
+                // Запускаем выбранную серию
+                const playArg = playlist[startIndex];
+                L('BTN play url=' + playArg.url.slice(0, 100));
+                Lampa.Player.play(playArg);
+
+                // Резервная перемотка
+                if (resumeTime > 1) {
+                    setTimeout(function () {
+                        if (overrideUsed) { L('skip PV.to (override worked)'); return; }
+                        try {
+                            if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
+                                L('PV.to(' + Math.round(resumeTime) + ') fallback');
+                                Lampa.PlayerVideo.to(resumeTime);
+                            }
+                        } catch (e) { L('PV.to err', e.message); }
+                    }, 5000);
+                }
+            } catch (e) {
+                L('files callback err: ' + e.message);
+                fallbackSingle(movie, d, resumeTime);
+            }
+        }, function (err) {
+            L('Torserver.files ошибка (попытка ' + attempt + '): ' + (err ? err.message || JSON.stringify(err) : 'unknown'));
+            if (attempt < 15) {
+                setTimeout(function () { pollTorserverFiles(movie, d, resumeTime, attempt); }, 2000);
+            } else {
+                L('BTN: 15 попыток не удались, fallback');
+                fallbackSingle(movie, d, resumeTime);
+            }
+        });
+    }
+
+    // === 6. Резервный запуск ===
     function fallbackSingle(movie, d, resumeTime) {
         L('FALLBACK single');
         const playArg = {};
-        for (const k in d) {
-            if (k.indexOf('__') === 0) continue;
-            playArg[k] = d[k];
-        }
-        playArg.card = movie;
-        playArg.movie = movie;
+        for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
+        playArg.card = movie; playArg.movie = movie;
         Lampa.Player.play(playArg);
-
         if (resumeTime > 1) {
             setTimeout(function () {
                 if (overrideUsed) { L('skip PV.to (override worked)'); return; }
@@ -284,5 +263,5 @@
         }
     }
 
-    L('v29 loaded');
+    L('v30 loaded');
 })();
