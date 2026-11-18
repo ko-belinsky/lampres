@@ -163,13 +163,27 @@
         if (!isSeries(movie)) return;
 
         $('.button--continue-series').remove();
-        $('.full-start-new__buttons').append(
+
+        // Показываем кнопку только если в плагине есть сохранённый прогресс
+        const saved = get(movie.id);
+        if (!saved || !saved.url) return;
+
+        const $btn = $(
             '<div class="full-start__button selector button--continue-series">' +
             '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
             '<span>Продолжить</span></div>'
         );
 
-        $('.button--continue-series').on('hover:enter', function () {
+        // Вставляем сразу после кнопки «Источник» — перед встроенной кнопкой «Торренты»
+        const $container = $('.full-start-new__buttons');
+        const $torrent = $container.children('.view--torrent').first();
+        if ($torrent.length) {
+            $torrent.before($btn);
+        } else {
+            $container.append($btn);
+        }
+
+        $btn.on('hover:enter', function () {
             const d = get(movie.id);
             if (!d || !d.url) return;
 
@@ -211,7 +225,7 @@
                         if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
                             Lampa.PlayerVideo.to(resumeTime);
                         }
-                    } catch (e) {}
+                    } catch (err) {}
                 }, 5000);
             }
         });
