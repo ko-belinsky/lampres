@@ -1,25 +1,14 @@
 (function () {
     'use strict';
-    if (window.cs_v40) return;
-    window.cs_v40 = true;
+    if (window.cs_v41) return;
+    window.cs_v41 = true;
 
-    const KEY = 'cs_v40_store';
+    const KEY = 'cs_v41_store';
     let lastMovieId = null;
     let pendingResume = null;
     let lastFvSnapshot = {};
 
-    // Улучшенное логирование с сохранением в localStorage
-    function L(m) {
-        var args = [].slice.call(arguments);
-        var msg = args.join(' ');
-        console.log('CS40', msg);
-        try {
-            var logs = JSON.parse(localStorage.getItem('cs40_logs') || '[]');
-            logs.push(new Date().toLocaleTimeString() + ' ' + msg);
-            if (logs.length > 500) logs.shift();
-            localStorage.setItem('cs40_logs', JSON.stringify(logs));
-        } catch(e) {}
-    }
+    function L(m) { console.log('CS41', m); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) {}
@@ -38,8 +27,8 @@
         return 'file_view';
     }
 
-    // === 1. Перехват Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v40) {
+    // === 1. Перехват Player.play (сохранение данных) ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v41) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -59,18 +48,18 @@
                         prim.__playlist = ex.__playlist || null;
                         save(movie.id, prim);
                         try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
-                        L('PLAY id=' + movie.id + ' fileIdx=' + (arg.id !== undefined ? arg.id : 'na'));
+                        L('PLAY id=' + movie.id + ' fileIdx=' + (arg.id !== undefined ? arg.id : 'na') + ' season=' + arg.season + ' episode=' + arg.episode);
                     }
                 }
             } catch(e) { L('play hook err ' + e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v40 = true;
+        Lampa.Player.__hooked_v41 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Перехват Player.playlist ===
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v40_pl) {
+    // === 2. Перехват Player.playlist (сохранение плейлиста) ===
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v41_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
@@ -95,11 +84,11 @@
             }
             return result;
         };
-        Lampa.Player.__hooked_v40_pl = true;
+        Lampa.Player.__hooked_v41_pl = true;
         L('HOOKED Player.playlist');
     }
 
-    // === 3. Опрос file_view ===
+    // === 3. Опрос file_view (сохранение прогресса) ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -128,8 +117,8 @@
         } catch(e) {}
     }, 2000);
 
-    // === 4. Перехват Timeline.view ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v40) {
+    // === 4. Перехват Timeline.view (встроенный плеер) ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v41) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -140,65 +129,45 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v40 = true;
+        Lampa.Timeline.__hooked_v41 = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 5. ХУК ANDROIDJS.OPENPLAYER ЧЕРЕЗ DEFINE_PROPERTY ===
-    let hooked = false;
-    let attempts = 0;
-    function hookNative() {
-        attempts++;
-        if (window.AndroidJS && !hooked) {
+    // === 5. ПЕРЕХВАТ RUNAS (подмена данных ДО отправки в Vimu) ===
+    if (Lampa.Player && typeof Lampa.Player.runas === 'function' && !Lampa.Player.__hooked_v41_runas) {
+        const origRunas = Lampa.Player.runas;
+        Lampa.Player.runas = function (data, player) {
             try {
-                const origOpen = window.AndroidJS.openPlayer;
-                // В WebView нативные объекты защищены от обычного присваивания
-                Object.defineProperty(window.AndroidJS, 'openPlayer', {
-                    value: function(link, dataJson) {
-                        try {
-                            let data = JSON.parse(dataJson);
-                            L('NATIVE CALL link=' + String(link).slice(0, 100));
-                            let startSec = 0;
-                            if (pendingResume && pendingResume.time > 1) {
-                                startSec = pendingResume.time;
-                                L('NATIVE startfrom from pendingResume=' + Math.round(startSec));
-                            } else if (data.timeline && data.timeline.time > 1) {
-                                startSec = data.timeline.time;
-                                L('NATIVE startfrom from timeline.time=' + Math.round(startSec));
-                            } else if (data.position && data.position > 1) {
-                                startSec = data.position;
-                                L('NATIVE startfrom from position=' + Math.round(startSec));
-                            }
-                            if (startSec > 1) {
-                                data.startfrom = Math.round(startSec * 1000);
-                                data.position = Math.round(startSec * 1000);
-                                L('NATIVE FORCED startfrom=' + data.startfrom + 'ms');
-                            }
-                            dataJson = JSON.stringify(data);
-                        } catch(e) { L('native hook err ' + e.message); }
-                        return origOpen.call(this, link, dataJson);
-                    },
-                    writable: true,
-                    configurable: true
-                });
-                hooked = true;
-                L('HOOKED AndroidJS.openPlayer via defineProperty');
-            } catch(e) {
-                L('defineProperty failed: ' + e.message);
-            }
-        }
-        if (!hooked && attempts < 30) setTimeout(hookNative, 1000);
+                if (data && pendingResume && pendingResume.time > 1) {
+                    // Vimu ожидает startfrom в миллисекундах
+                    data.startfrom = Math.round(pendingResume.time * 1000);
+                    data.position = Math.round(pendingResume.time * 1000);
+                    if (data.timeline) {
+                        data.timeline.time = pendingResume.time;
+                        data.timeline.duration = pendingResume.duration || 0;
+                    }
+                    L('RUNAS INJECTED startfrom=' + data.startfrom);
+                }
+            } catch(e) { L('runas hook err ' + e.message); }
+            return origRunas.apply(this, arguments);
+        };
+        Lampa.Player.__hooked_v41_runas = true;
+        L('HOOKED Player.runas');
     }
-    hookNative();
 
-    // === 6. Поиск индекса серии в плейлисте ===
+    // === 6. Поиск индекса серии в плейлисте (надежный) ===
     function findPlaylistIndex(playlist, d) {
         if (!playlist || !d) return -1;
         for (let i = 0; i < playlist.length; i++) {
             const it = playlist[i];
             if (!it) continue;
+            // По пути файла
             if (d.path && it.path && d.path === it.path) return i;
+            // По URL
             if (d.url && it.url && d.url === it.url) return i;
+            // По сезону и эпизоду (самый надежный для сериалов)
+            if (d.season !== undefined && d.episode !== undefined && it.season === d.season && it.episode === d.episode) return i;
+            // По индексу
             if (d.id !== undefined && d.id !== null) {
                 if (it.id === d.id || it.file_index === d.id || it.index === d.id) return i;
             }
@@ -206,39 +175,18 @@
         return -1;
     }
 
-    // === 7. Кнопка «Продолжить» и «Логи» ===
+    // === 7. Кнопка «Продолжить» ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
         if (!isSeries(movie)) return;
 
         $('.button--continue-series').remove();
-        $('.button--cs-logs').remove();
-
-        // Кнопка Продолжить
         $('.full-start-new__buttons').append(
             '<div class="full-start__button selector button--continue-series">' +
             '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
             '<span>Продолжить</span></div>'
         );
-
-        // Кнопка Логи
-        $('.full-start-new__buttons').append(
-            '<div class="full-start__button selector button--cs-logs">' +
-            '<span>Логи</span></div>'
-        );
-
-        $('.button--cs-logs').on('hover:enter', function () {
-            var logs = localStorage.getItem('cs40_logs') || '[]';
-            var text = JSON.parse(logs).join('\n');
-            var html = '<textarea style="width:100%;height:400px;background:#222;color:#fff;border:1px solid #444;padding:10px;font-family:monospace;font-size:12px;" readonly>' + text + '</textarea>';
-            Lampa.Modal.open({
-                title: 'Логи ContinueSeries (v40)',
-                html: html,
-                size: 'large',
-                mask: true
-            });
-        });
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
@@ -272,17 +220,16 @@
                 playArg.card = movie;
                 playArg.movie = movie;
                 playArg.playlist = d.__playlist;
-                L('BTN with playlist items=' + d.__playlist.length + ' startIdx=' + startIdx);
+                L('BTN playlist startIdx=' + startIdx + ' (idx=' + idx + ') d.season=' + d.season + ' d.episode=' + d.episode);
             }
 
             if (resumeTime > 1) {
                 playArg.timeline = { hash: d.__timelineHash || '0', time: resumeTime, duration: d.__duration || 0 };
-                L('BTN timeline SET time=' + Math.round(resumeTime));
             }
 
             Lampa.Player.play(playArg);
 
-            // ВОЗВРАЩАЕМ ПРОВЕРЕННЫЙ МЕТОД ДЛЯ ВСТРОЕННОГО ПЛЕЕРА (через video.currentTime)
+            // Перемотка для встроенного плеера
             if (resumeTime > 1) {
                 let tries = 0;
                 const timer = setInterval(function () {
@@ -293,8 +240,6 @@
                         if (Math.abs(v.currentTime - resumeTime) > 3) {
                             v.currentTime = resumeTime;
                             L('SEEK to ' + Math.round(resumeTime));
-                        } else {
-                            L('already at ' + Math.round(v.currentTime));
                         }
                         clearInterval(timer);
                     } else if (++tries > 40) {
@@ -306,5 +251,5 @@
         });
     });
 
-    L('v40 loaded');
+    L('v41 loaded');
 })();
