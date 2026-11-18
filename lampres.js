@@ -158,34 +158,45 @@
 
     // === Блок кнопки «Продолжить» ===
 
-    let cardObserver = null;
+    let placeTimer = null;
 
     function stopWatching() {
-        if (cardObserver) { cardObserver.disconnect(); cardObserver = null; }
+        if (placeTimer) { clearInterval(placeTimer); placeTimer = null; }
     }
 
-    // Ищем родную кнопку «Источник» по её подписи — это работает
-    // одинаково на любой версии, потому что интерфейс везде один
-    function findSourceButton($container) {
-        if (!$container || !$container.length) return null;
-        const items = $container[0].children;
-        for (let i = 0; i < items.length; i++) {
-            const el = items[i];
-            if (el.classList.contains('button--continue-series')) continue;
-            const text = (el.textContent || '').trim().toLowerCase();
-            if (text.indexOf('источник') !== -1 || text.indexOf('плеер') !== -1) return el;
+    // Ищем кнопку «Источник» (.button--play) по всей карточке,
+    // среди всех её копий выбираем ту, что лежит в ряду кнопок
+    function findPlayIn(root) {
+        const plays = root.find('.button--play');
+        for (let i = 0; i < plays.length; i++) {
+            const parent = plays[i].parentNode;
+            if (parent && (parent.classList.contains('full-start-new__buttons') ||
+                           parent.classList.contains('full-start__buttons'))) {
+                return plays[i];
+            }
         }
         return null;
     }
 
-    // Ставим кнопку сразу после «Источник»
-    function placeButton($btn, $container) {
-        if (!document.body.contains($btn[0])) return;
-        const sourceEl = findSourceButton($container);
-        if (!sourceEl) return;
-        if (sourceEl.nextElementSibling !== $btn[0]) {
-            sourceEl.after($btn[0]);
+    // Ставим кнопку сразу после «Источник»; пока его нет — просто в ряду
+    function place($btn, root) {
+        if (!document.body.contains($btn[0])) return true; // кнопка умерла — прекращаем
+        const play = findPlayIn(root);
+        if (play) {
+            if (play.nextElementSibling !== $btn[0]) {
+                play.after($btn[0]);
+            }
+            return true; // встали на место
         }
+        // «Источник» ещё не отрисовался — держимся в ряду кнопок
+        const container = root.find('.full-start-new__buttons').first();
+        if (!container.length) {
+            const alt = root.find('.full-start__buttons').first();
+            if (alt.length && !$btn.closest(alt).length) alt.append($btn);
+        } else if (!$btn.closest(container).length) {
+            container.append($btn);
+        }
+        return false; // продолжаем ждать «Источник»
     }
 
     // Кнопка «Продолжить»
@@ -198,13 +209,9 @@
         const movie = e.data.movie;
         if (!isSeries(movie)) return;
 
-        // Работаем строго внутри текущей карточки, а не по всей странице
+        // Работаем строго внутри отрисованной карточки
         let root;
         try { root = e.object.activity.render(); } catch (err) { return; }
-        const $container = root.find('.full-start-new__buttons').length
-            ? root.find('.full-start-new__buttons')
-            : root.find('.full-start__buttons');
-        if (!$container.length) return;
 
         stopWatching();
         root.find('.button--continue-series').remove();
@@ -266,16 +273,15 @@
             }
         });
 
-        // Сначала просто добавляем в ряд, а как только «Источник» рядом — встаём после него
-        $container.append($btn);
-        placeButton($btn, $container);
+        // Сразу пробуем встать после «Источник»
+        const settled = place($btn, root);
 
-        // Если «Источник» отрисуется позже или ряд перестроится — сразу переезжаем
-        if ('MutationObserver' in window) {
-            cardObserver = new MutationObserver(function () {
-                placeButton($btn, $container);
-            });
-            cardObserver.observe($container[0], { childList: true });
+        // Если не встали — каждые полсекунды проверяем карточку,
+        // пока «Источник» не появится и мы не займём второе место
+        if (!settled) {
+            placeTimer = setInterval(function () {
+                if (place($btn, root)) stopWatching();
+            }, 500);
         }
     });
 })();
