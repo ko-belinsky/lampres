@@ -1,15 +1,15 @@
 (function () {
     'use strict';
-    if (window.cs_v38) return;
-    window.cs_v38 = true;
+    if (window.cs_v39) return;
+    window.cs_v39 = true;
 
-    const KEY = 'cs_v38_store';
+    const KEY = 'cs_v39_store';
     let lastMovieId = null;
     let pendingResume = null;
     let overrideUsed = false;
     let lastFvSnapshot = {};
 
-    function L() { console.log.apply(console, ['CS38'].concat([].slice.call(arguments))); }
+    function L() { console.log.apply(console, ['CS39'].concat([].slice.call(arguments))); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) { L('save err', e.message); }
@@ -29,7 +29,7 @@
     }
 
     // === 1. Перехват Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v38) {
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v39) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -55,19 +55,18 @@
             } catch(e) { L('play hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v38 = true;
+        Lampa.Player.__hooked_v39 = true;
         L('HOOKED Player.play');
     }
 
     // === 2. Перехват Player.playlist ===
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v38_pl) {
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v39_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
             let result;
             try { result = origPl.apply(this, args); }
             catch(e) { L('pl call err', e.message); return; }
-
             if (args.length > 0 && Array.isArray(args[0]) && args[0].length > 0 && lastMovieId) {
                 try {
                     const stored = args[0].map(item => {
@@ -86,7 +85,7 @@
             }
             return result;
         };
-        Lampa.Player.__hooked_v38_pl = true;
+        Lampa.Player.__hooked_v39_pl = true;
         L('HOOKED Player.playlist');
     }
 
@@ -119,8 +118,8 @@
         } catch(e) {}
     }, 2000);
 
-    // === 4. Перехват Timeline.view ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v38) {
+    // === 4. Перехват Timeline.view (для встроенного плеера) ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v39) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -132,45 +131,57 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v38 = true;
+        Lampa.Timeline.__hooked_v39 = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 5. ПЕРЕХВАТ НАТИВНОГО МОСТА AndroidJS.openPlayer ===
-    // Lampa вызывает AndroidJS.openPlayer(link, JSON.stringify(data)).
-    // data.position уже вычислен из data.timeline.time, но если time не был
-    // установлен до этого, position = -1. Мы принудительно вписываем startfrom.
-    if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function' && !AndroidJS.__hooked_v38) {
-        const origOpen = AndroidJS.openPlayer;
-        AndroidJS.openPlayer = function (link, dataJson) {
-            try {
-                const data = JSON.parse(dataJson);
-                let startSec = 0;
-                if (pendingResume && pendingResume.time > 1) {
-                    startSec = pendingResume.time;
-                    L('NATIVE startfrom from pendingResume=' + Math.round(startSec));
-                } else if (data.timeline && data.timeline.time > 1) {
-                    startSec = data.timeline.time;
-                    L('NATIVE startfrom from timeline.time=' + Math.round(startSec));
-                } else if (data.position && data.position > 1) {
-                    startSec = data.position;
-                    L('NATIVE startfrom from position=' + Math.round(startSec));
-                }
-                if (startSec > 1) {
-                    // Vimu ожидает startfrom в МИЛЛИСЕКУНДАХ
-                    data.startfrom = Math.round(startSec * 1000);
-                    // На всякий случай дублируем в position (некоторые плееры читают его)
-                    data.position = data.startfrom;
-                }
-                dataJson = JSON.stringify(data);
-            } catch(e) { L('native hook err', e.message); }
-            return origOpen.call(this, link, dataJson);
-        };
-        AndroidJS.__hooked_v38 = true;
-        L('HOOKED AndroidJS.openPlayer');
-    } else {
-        L('AndroidJS.openPlayer NOT FOUND (will rely on timeline/position)');
+    // === 5. ХУК ANDROIDJS.OPENPLAYER (с повторными попытками) ===
+    let androidHookAttempts = 0;
+    function hookAndroidOpenPlayer() {
+        androidHookAttempts++;
+        if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function' && !AndroidJS.__hooked_v39) {
+            const origOpen = AndroidJS.openPlayer;
+            AndroidJS.openPlayer = function (link, dataJson) {
+                try {
+                    let data = JSON.parse(dataJson);
+                    L('NATIVE CALL link=' + String(link).slice(0, 100));
+                    L('NATIVE data keys=' + Object.keys(data).join(','));
+                    L('NATIVE timeline=' + JSON.stringify(data.timeline || null));
+                    L('NATIVE startfrom=' + (data.startfrom || 'none') + ' position=' + (data.position || 'none'));
+
+                    let startSec = 0;
+                    if (pendingResume && pendingResume.time > 1) {
+                        startSec = pendingResume.time;
+                        L('NATIVE startfrom from pendingResume=' + Math.round(startSec));
+                    } else if (data.timeline && data.timeline.time > 1) {
+                        startSec = data.timeline.time;
+                        L('NATIVE startfrom from timeline.time=' + Math.round(startSec));
+                    } else if (data.position && data.position > 1) {
+                        startSec = data.position;
+                        L('NATIVE startfrom from position=' + Math.round(startSec));
+                    }
+
+                    if (startSec > 1) {
+                        const ms = Math.round(startSec * 1000);
+                        data.startfrom = ms;
+                        data.position = ms;
+                        L('NATIVE FORCED startfrom=' + ms + 'ms');
+                    }
+                    dataJson = JSON.stringify(data);
+                } catch(e) { L('native hook err', e.message); }
+                return origOpen.call(this, link, dataJson);
+            };
+            AndroidJS.__hooked_v39 = true;
+            L('HOOKED AndroidJS.openPlayer (attempt ' + androidHookAttempts + ')');
+        } else {
+            if (androidHookAttempts < 30) {
+                setTimeout(hookAndroidOpenPlayer, 1000);
+            } else {
+                L('AndroidJS.openPlayer NOT FOUND after ' + androidHookAttempts + ' attempts');
+            }
+        }
     }
+    hookAndroidOpenPlayer();
 
     // === 6. Поиск индекса серии в плейлисте ===
     function findPlaylistIndex(playlist, d) {
@@ -203,8 +214,7 @@
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
             L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no') +
-              ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0) +
-              ' hash=' + (d && d.__timelineHash ? String(d.__timelineHash).slice(0,10) : 'none'));
+              ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0));
             if (!d || !d.url) return;
 
             const resumeTime = d.__time || 0;
@@ -212,8 +222,6 @@
             if (resumeTime > 1) {
                 pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
                 L('pendingResume SET ' + Math.round(resumeTime));
-                // Таймаут больше не нужен для внешнего плеера: мы перехватываем AndroidJS
-                // и используем pendingResume синхронно. Но оставим на всякий случай.
                 setTimeout(function () {
                     if (pendingResume && pendingResume.movieId === movie.id) {
                         pendingResume = null;
@@ -222,13 +230,11 @@
                 }, 20000);
             }
 
-            // Базовый аргумент
             const playArg = {};
             for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
             playArg.card = movie;
             playArg.movie = movie;
 
-            // Плейлист внутри аргумента
             if (d.__playlist && d.__playlist.length > 0) {
                 const idx = findPlaylistIndex(d.__playlist, d);
                 const startIdx = idx >= 0 ? idx : 0;
@@ -242,19 +248,15 @@
                 L('BTN with playlist items=' + d.__playlist.length + ' startIdx=' + startIdx);
             }
 
-            // Устанавливаем timeline.time (это нужно для data.position в player.js)
             if (resumeTime > 1) {
-                playArg.timeline = {
-                    hash: d.__timelineHash || '0',
-                    time: resumeTime,
-                    duration: d.__duration || 0
-                };
-                L('BTN timeline SET time=' + Math.round(resumeTime));
+                playArg.timeline = { hash: d.__timelineHash || '0', time: resumeTime, duration: d.__duration || 0 };
+                playArg.startfrom = Math.round(resumeTime * 1000);
+                playArg.position = Math.round(resumeTime * 1000);
+                L('BTN timeline SET time=' + Math.round(resumeTime) + ' startfrom=' + playArg.startfrom);
             }
 
             Lampa.Player.play(playArg);
 
-            // Резервная перемотка для встроенного плеера
             if (resumeTime > 1) {
                 setTimeout(function () {
                     if (overrideUsed) { L('skip PV.to (override worked)'); return; }
@@ -269,5 +271,5 @@
         });
     });
 
-    L('v38 loaded');
+    L('v39 loaded');
 })();
