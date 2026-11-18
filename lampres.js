@@ -1,15 +1,15 @@
 (function () {
     'use strict';
-    if (window.cs_v37) return;
-    window.cs_v37 = true;
+    if (window.cs_v38) return;
+    window.cs_v38 = true;
 
-    const KEY = 'cs_v37_store';
+    const KEY = 'cs_v38_store';
     let lastMovieId = null;
     let pendingResume = null;
     let overrideUsed = false;
     let lastFvSnapshot = {};
 
-    function L() { console.log.apply(console, ['CS37'].concat([].slice.call(arguments))); }
+    function L() { console.log.apply(console, ['CS38'].concat([].slice.call(arguments))); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) { L('save err', e.message); }
@@ -29,7 +29,7 @@
     }
 
     // === 1. Перехват Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v37) {
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v38) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -55,12 +55,12 @@
             } catch(e) { L('play hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v37 = true;
+        Lampa.Player.__hooked_v38 = true;
         L('HOOKED Player.play');
     }
 
     // === 2. Перехват Player.playlist ===
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v37_pl) {
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v38_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
@@ -86,11 +86,11 @@
             }
             return result;
         };
-        Lampa.Player.__hooked_v37_pl = true;
+        Lampa.Player.__hooked_v38_pl = true;
         L('HOOKED Player.playlist');
     }
 
-    // === 3. Опрос file_view (сохранение прогресса) ===
+    // === 3. Опрос file_view ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -119,8 +119,8 @@
         } catch(e) {}
     }, 2000);
 
-    // === 4. Перехват Timeline.view (для встроенного плеера) ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v37) {
+    // === 4. Перехват Timeline.view ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v38) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -132,11 +132,47 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v37 = true;
+        Lampa.Timeline.__hooked_v38 = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 5. Поиск индекса серии в плейлисте ===
+    // === 5. ПЕРЕХВАТ НАТИВНОГО МОСТА AndroidJS.openPlayer ===
+    // Lampa вызывает AndroidJS.openPlayer(link, JSON.stringify(data)).
+    // data.position уже вычислен из data.timeline.time, но если time не был
+    // установлен до этого, position = -1. Мы принудительно вписываем startfrom.
+    if (window.AndroidJS && typeof AndroidJS.openPlayer === 'function' && !AndroidJS.__hooked_v38) {
+        const origOpen = AndroidJS.openPlayer;
+        AndroidJS.openPlayer = function (link, dataJson) {
+            try {
+                const data = JSON.parse(dataJson);
+                let startSec = 0;
+                if (pendingResume && pendingResume.time > 1) {
+                    startSec = pendingResume.time;
+                    L('NATIVE startfrom from pendingResume=' + Math.round(startSec));
+                } else if (data.timeline && data.timeline.time > 1) {
+                    startSec = data.timeline.time;
+                    L('NATIVE startfrom from timeline.time=' + Math.round(startSec));
+                } else if (data.position && data.position > 1) {
+                    startSec = data.position;
+                    L('NATIVE startfrom from position=' + Math.round(startSec));
+                }
+                if (startSec > 1) {
+                    // Vimu ожидает startfrom в МИЛЛИСЕКУНДАХ
+                    data.startfrom = Math.round(startSec * 1000);
+                    // На всякий случай дублируем в position (некоторые плееры читают его)
+                    data.position = data.startfrom;
+                }
+                dataJson = JSON.stringify(data);
+            } catch(e) { L('native hook err', e.message); }
+            return origOpen.call(this, link, dataJson);
+        };
+        AndroidJS.__hooked_v38 = true;
+        L('HOOKED AndroidJS.openPlayer');
+    } else {
+        L('AndroidJS.openPlayer NOT FOUND (will rely on timeline/position)');
+    }
+
+    // === 6. Поиск индекса серии в плейлисте ===
     function findPlaylistIndex(playlist, d) {
         if (!playlist || !d) return -1;
         for (let i = 0; i < playlist.length; i++) {
@@ -151,7 +187,7 @@
         return -1;
     }
 
-    // === 6. Кнопка «Продолжить» ===
+    // === 7. Кнопка «Продолжить» ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
@@ -176,6 +212,8 @@
             if (resumeTime > 1) {
                 pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
                 L('pendingResume SET ' + Math.round(resumeTime));
+                // Таймаут больше не нужен для внешнего плеера: мы перехватываем AndroidJS
+                // и используем pendingResume синхронно. Но оставим на всякий случай.
                 setTimeout(function () {
                     if (pendingResume && pendingResume.movieId === movie.id) {
                         pendingResume = null;
@@ -204,16 +242,14 @@
                 L('BTN with playlist items=' + d.__playlist.length + ' startIdx=' + startIdx);
             }
 
-            // === КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ ДЛЯ ВНЕШНЕГО ПЛЕЕРА ===
-            // Lampa берёт время из data.timeline.time для поля data.position,
-            // поэтому нужно установить time явно.
+            // Устанавливаем timeline.time (это нужно для data.position в player.js)
             if (resumeTime > 1) {
                 playArg.timeline = {
                     hash: d.__timelineHash || '0',
                     time: resumeTime,
                     duration: d.__duration || 0
                 };
-                L('BTN timeline SET time=' + Math.round(resumeTime) + ' hash=' + String(d.__timelineHash || '0').slice(0,10));
+                L('BTN timeline SET time=' + Math.round(resumeTime));
             }
 
             Lampa.Player.play(playArg);
@@ -233,5 +269,5 @@
         });
     });
 
-    L('v37 loaded');
+    L('v38 loaded');
 })();
