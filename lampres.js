@@ -156,77 +156,20 @@
         return -1;
     }
 
-    // === Блок кнопки «Продолжить» ===
-
-    let placeTimer = null;
-
-    function stopWatching() {
-        if (placeTimer) { clearInterval(placeTimer); placeTimer = null; }
-    }
-
-    // Ищем кнопку «Источник» (.button--play) по всей карточке,
-    // среди всех её копий выбираем ту, что лежит в ряду кнопок
-    function findPlayIn(root) {
-        const plays = root.find('.button--play');
-        for (let i = 0; i < plays.length; i++) {
-            const parent = plays[i].parentNode;
-            if (parent && (parent.classList.contains('full-start-new__buttons') ||
-                           parent.classList.contains('full-start__buttons'))) {
-                return plays[i];
-            }
-        }
-        return null;
-    }
-
-    // Ставим кнопку сразу после «Источник»; пока его нет — просто в ряду
-    function place($btn, root) {
-        if (!document.body.contains($btn[0])) return true; // кнопка умерла — прекращаем
-        const play = findPlayIn(root);
-        if (play) {
-            if (play.nextElementSibling !== $btn[0]) {
-                play.after($btn[0]);
-            }
-            return true; // встали на место
-        }
-        // «Источник» ещё не отрисовался — держимся в ряду кнопок
-        const container = root.find('.full-start-new__buttons').first();
-        if (!container.length) {
-            const alt = root.find('.full-start__buttons').first();
-            if (alt.length && !$btn.closest(alt).length) alt.append($btn);
-        } else if (!$btn.closest(container).length) {
-            container.append($btn);
-        }
-        return false; // продолжаем ждать «Источник»
-    }
-
     // Кнопка «Продолжить»
     Lampa.Listener.follow('full', function (e) {
-        if (e.type !== 'complite') {
-            if (e.type === 'destroy') stopWatching();
-            return;
-        }
-        if (!e.data || !e.data.movie || !e.object) return;
+        if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
         if (!isSeries(movie)) return;
 
-        // Работаем строго внутри отрисованной карточки
-        let root;
-        try { root = e.object.activity.render(); } catch (err) { return; }
-
-        stopWatching();
-        root.find('.button--continue-series').remove();
-
-        // Показываем кнопку только если в плагине есть сохранённый прогресс
-        const saved = get(movie.id);
-        if (!saved || !saved.url) return;
-
-        const $btn = $(
+        $('.button--continue-series').remove();
+        $('.full-start-new__buttons').append(
             '<div class="full-start__button selector button--continue-series">' +
             '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
             '<span>Продолжить</span></div>'
         );
 
-        $btn.on('hover:enter', function () {
+        $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
             if (!d || !d.url) return;
 
@@ -268,20 +211,9 @@
                         if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
                             Lampa.PlayerVideo.to(resumeTime);
                         }
-                    } catch (err) {}
+                    } catch (e) {}
                 }, 5000);
             }
         });
-
-        // Сразу пробуем встать после «Источник»
-        const settled = place($btn, root);
-
-        // Если не встали — каждые полсекунды проверяем карточку,
-        // пока «Источник» не появится и мы не займём второе место
-        if (!settled) {
-            placeTimer = setInterval(function () {
-                if (place($btn, root)) stopWatching();
-            }, 500);
-        }
     });
 })();
