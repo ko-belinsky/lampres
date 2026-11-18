@@ -156,13 +156,46 @@
         return -1;
     }
 
+    // === Блок кнопки «Продолжить» ===
+
+    let cardObserver = null;
+
+    function stopWatching() {
+        if (cardObserver) { cardObserver.disconnect(); cardObserver = null; }
+    }
+
+    // Ищем родную кнопку «Источник» среди кнопок конкретной карточки
+    function findSourceButton(container) {
+        if (!container || !container.length) return null;
+        const items = container[0].children;
+        for (let i = 0; i < items.length; i++) {
+            const el = items[i];
+            if (el.classList.contains('button--continue-series')) continue;
+            const text = (el.textContent || '').trim().toLowerCase();
+            if (text.indexOf('источник') === 0) return el;
+        }
+        return null;
+    }
+
     // Кнопка «Продолжить»
     Lampa.Listener.follow('full', function (e) {
-        if (e.type !== 'complite' || !e.data || !e.data.movie) return;
+        if (e.type !== 'complite' && e.type !== 'archive') {
+            if (e.type === 'destroy') stopWatching();
+            return;
+        }
+        if (!e.data || !e.data.movie || !e.object) return;
         const movie = e.data.movie;
         if (!isSeries(movie)) return;
 
-        $('.button--continue-series').remove();
+        // Работаем строго внутри отрисованной карточки, а не по всей странице
+        const root = e.object.activity.render();
+        const $container = root.find('.full-start-new__buttons').length
+            ? root.find('.full-start-new__buttons')
+            : root.find('.full-start__buttons');
+        if (!$container.length) return;
+
+        stopWatching();
+        root.find('.button--continue-series').remove();
 
         // Показываем кнопку только если в плагине есть сохранённый прогресс
         const saved = get(movie.id);
@@ -173,15 +206,6 @@
             '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>' +
             '<span>Продолжить</span></div>'
         );
-
-        // Вставляем сразу после кнопки «Источник» — перед встроенной кнопкой «Торренты»
-        const $container = $('.full-start-new__buttons');
-        const $torrent = $container.children('.view--torrent').first();
-        if ($torrent.length) {
-            $torrent.before($btn);
-        } else {
-            $container.append($btn);
-        }
 
         $btn.on('hover:enter', function () {
             const d = get(movie.id);
@@ -229,5 +253,26 @@
                 }, 5000);
             }
         });
+
+        // Ставим сразу после родного «Источника»
+        function placeButton() {
+            if (!document.body.contains($btn[0])) return;
+            const sourceEl = findSourceButton($container);
+            if (!sourceEl) return;
+            if (sourceEl.nextElementSibling !== $btn[0]) {
+                sourceEl.after($btn[0]);
+            }
+        }
+
+        placeButton();
+        if (!$btn.closest($container).length || !findSourceButton($container)) {
+            $container.append($btn);
+        }
+
+        // Если «Источник» появится или перестроится чуть позже — подстроимся
+        if ('MutationObserver' in window) {
+            cardObserver = new MutationObserver(placeButton);
+            cardObserver.observe($container[0], { childList: true });
+        }
     });
 })();
