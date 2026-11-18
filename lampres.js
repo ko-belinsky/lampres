@@ -1,52 +1,35 @@
 (function () {
     'use strict';
+    if (window.cs_v35) return;
+    window.cs_v35 = true;
 
-    const KEY = 'store';
+    const KEY = 'cs_v35_store';
     let lastMovieId = null;
     let pendingResume = null;
     let overrideUsed = false;
     let lastFvSnapshot = {};
 
+    function L() { console.log.apply(console, ['CS35'].concat([].slice.call(arguments))); }
+
     function save(id, data) {
-        try {
-            const a = JSON.parse(localStorage.getItem(KEY) || '{}');
-            a[String(id)] = data;
-            localStorage.setItem(KEY, JSON.stringify(a));
-        } catch (e) {}
+        try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) { L('save err', e.message); }
     }
-
     function get(id) {
-        try {
-            return JSON.parse(localStorage.getItem(KEY) || '{}')[String(id)] || null;
-        } catch (e) {
-            return null;
-        }
+        try { return JSON.parse(localStorage.getItem(KEY)||'{}')[String(id)]||null; } catch(e) { return null; }
     }
-
-    function isSeries(m) {
-        return m && (m.number_of_seasons > 0 || !!m.first_air_date || (m.name && !m.title));
-    }
-
-    function currentMovie() {
-        try {
-            const a = Lampa.Activity.active();
-            return a && (a.movie || a.card || a.card_data);
-        } catch (e) {
-            return null;
-        }
-    }
-
+    function isSeries(m) { return m && (m.number_of_seasons > 0 || !!m.first_air_date || (m.name && !m.title)); }
+    function currentMovie() { try { const a = Lampa.Activity.active(); return a && (a.movie || a.card || a.card_data); } catch(e) { return null; } }
     function getFvKey() {
         try {
             if (Lampa.Account && Lampa.Account.Permit && Lampa.Account.Permit.account && Lampa.Account.Permit.account.profile) {
                 return 'file_view_' + Lampa.Account.Permit.account.profile.id;
             }
-        } catch (e) {}
+        } catch(e) {}
         return 'file_view';
     }
 
-    // Перехват Player.play
-    if (Lampa.Player && typeof Lampa.Player.play === 'function') {
+    // === 1. Перехват Player.play ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v35) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -64,22 +47,25 @@
                         prim.__duration = ex.__duration || 0;
                         prim.__playlist = ex.__playlist || null;
                         save(movie.id, prim);
-                        try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch (e) { lastFvSnapshot = {}; }
+                        try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
+                        L('PLAY id=' + movie.id + ' fileIdx=' + (arg.id !== undefined ? arg.id : 'na'));
                     }
                 }
-            } catch (e) {}
+            } catch(e) { L('play hook err', e.message); }
             return orig.apply(this, arguments);
         };
+        Lampa.Player.__hooked_v35 = true;
+        L('HOOKED Player.play');
     }
 
-    // Перехват Player.playlist (сохранение плейлиста при ручном запуске)
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function') {
+    // === 2. Перехват Player.playlist (чтобы сохранять плейлист при ручном запуске) ===
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v35_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
             let result;
             try { result = origPl.apply(this, args); }
-            catch (e) { return; }
+            catch(e) { L('pl call err', e.message); return; }
 
             if (args.length > 0 && Array.isArray(args[0]) && args[0].length > 0 && lastMovieId) {
                 try {
@@ -94,13 +80,16 @@
                     const d = get(lastMovieId) || {};
                     d.__playlist = stored;
                     save(lastMovieId, d);
-                } catch (e) {}
+                    L('PLAYLIST saved id=' + lastMovieId + ' items=' + stored.length);
+                } catch(e) { L('pl save err', e.message); }
             }
             return result;
         };
+        Lampa.Player.__hooked_v35_pl = true;
+        L('HOOKED Player.playlist');
     }
 
-    // Опрос file_view
+    // === 3. Опрос file_view ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -117,31 +106,30 @@
             }
             if (best) {
                 const d = get(lastMovieId);
-                if (d) {
-                    d.__time = best.time;
-                    d.__duration = best.duration || d.__duration || 0;
-                    save(lastMovieId, d);
-                }
+                if (d) { d.__time = best.time; d.__duration = best.duration || d.__duration || 0; save(lastMovieId, d); L('FV time=' + Math.round(best.time)); }
             }
             lastFvSnapshot = store;
-        } catch (e) {}
+        } catch(e) {}
     }, 2000);
 
-    // Перехват Timeline.view
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function') {
+    // === 4. Перехват Timeline.view ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v35) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
-            try { result = origView.apply(this, arguments); } catch (e) { result = null; }
+            try { result = origView.apply(this, arguments); } catch(e) { result = null; }
             if (pendingResume && pendingResume.time > 1) {
                 overrideUsed = true;
+                L('TV OVERRIDE -> ' + Math.round(pendingResume.time));
                 return { time: pendingResume.time, duration: pendingResume.duration || (pendingResume.time + 3000), percent: 0 };
             }
             return result;
         };
+        Lampa.Timeline.__hooked_v35 = true;
+        L('HOOKED Timeline.view');
     }
 
-    // Поиск индекса серии в плейлисте
+    // === 5. Поиск индекса серии в плейлисте ===
     function findPlaylistIndex(playlist, d) {
         if (!playlist || !d) return -1;
         for (let i = 0; i < playlist.length; i++) {
@@ -156,7 +144,7 @@
         return -1;
     }
 
-    // Кнопка «Продолжить»
+    // === 6. Кнопка «Продолжить» ===
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         const movie = e.data.movie;
@@ -171,34 +159,45 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
+            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no') + ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0));
             if (!d || !d.url) return;
 
             const resumeTime = d.__time || 0;
             overrideUsed = false;
             if (resumeTime > 1) {
                 pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
+                L('pendingResume SET ' + Math.round(resumeTime));
                 setTimeout(function () {
                     if (pendingResume && pendingResume.movieId === movie.id) {
                         pendingResume = null;
+                        L('pendingResume TIMEOUT (used=' + overrideUsed + ')');
                     }
                 }, 20000);
             }
 
+            // Собираем аргумент для play()
             const playArg = {};
             for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
             playArg.card = movie;
             playArg.movie = movie;
 
+            // КЛЮЧЕВОЕ: передаём плейлист ВНУТРИ playArg
             if (d.__playlist && d.__playlist.length > 0) {
                 const idx = findPlaylistIndex(d.__playlist, d);
                 const startIdx = idx >= 0 ? idx : 0;
+                // Помечаем selected
                 for (let i = 0; i < d.__playlist.length; i++) {
                     d.__playlist[i].selected = (i === startIdx);
                 }
+                // Устанавливаем активный элемент как основной
                 Object.assign(playArg, d.__playlist[startIdx]);
                 playArg.card = movie;
                 playArg.movie = movie;
+                // ПЛЕЙЛИСТ ЦЕЛИКОМ
                 playArg.playlist = d.__playlist;
+                L('BTN with playlist items=' + d.__playlist.length + ' startIdx=' + startIdx);
+            } else {
+                L('BTN no playlist, single');
             }
 
             Lampa.Player.play(playArg);
@@ -206,14 +205,17 @@
             // Резервная перемотка
             if (resumeTime > 1) {
                 setTimeout(function () {
-                    if (overrideUsed) return;
+                    if (overrideUsed) { L('skip PV.to'); return; }
                     try {
                         if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
+                            L('PV.to(' + Math.round(resumeTime) + ') fallback');
                             Lampa.PlayerVideo.to(resumeTime);
                         }
-                    } catch (e) {}
+                    } catch(e) {}
                 }, 5000);
             }
         });
     });
+
+    L('v35 loaded');
 })();
