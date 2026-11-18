@@ -1,15 +1,15 @@
 (function () {
     'use strict';
-    if (window.cs_v35) return;
-    window.cs_v35 = true;
+    if (window.cs_v36) return;
+    window.cs_v36 = true;
 
-    const KEY = 'cs_v35_store';
+    const KEY = 'cs_v36_store';
     let lastMovieId = null;
     let pendingResume = null;
     let overrideUsed = false;
     let lastFvSnapshot = {};
 
-    function L() { console.log.apply(console, ['CS35'].concat([].slice.call(arguments))); }
+    function L() { console.log.apply(console, ['CS36'].concat([].slice.call(arguments))); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) { L('save err', e.message); }
@@ -29,7 +29,7 @@
     }
 
     // === 1. Перехват Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v35) {
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v36) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -45,6 +45,7 @@
                         const ex = get(movie.id) || {};
                         prim.__time = ex.__time || 0;
                         prim.__duration = ex.__duration || 0;
+                        prim.__timelineHash = ex.__timelineHash || null;
                         prim.__playlist = ex.__playlist || null;
                         save(movie.id, prim);
                         try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
@@ -54,12 +55,12 @@
             } catch(e) { L('play hook err', e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v35 = true;
+        Lampa.Player.__hooked_v36 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Перехват Player.playlist (чтобы сохранять плейлист при ручном запуске) ===
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v35_pl) {
+    // === 2. Перехват Player.playlist ===
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v36_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
@@ -85,11 +86,11 @@
             }
             return result;
         };
-        Lampa.Player.__hooked_v35_pl = true;
+        Lampa.Player.__hooked_v36_pl = true;
         L('HOOKED Player.playlist');
     }
 
-    // === 3. Опрос file_view ===
+    // === 3. Опрос file_view (сохранение прогресса) ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -106,14 +107,20 @@
             }
             if (best) {
                 const d = get(lastMovieId);
-                if (d) { d.__time = best.time; d.__duration = best.duration || d.__duration || 0; save(lastMovieId, d); L('FV time=' + Math.round(best.time)); }
+                if (d) {
+                    d.__time = best.time;
+                    d.__duration = best.duration || d.__duration || 0;
+                    d.__timelineHash = best.hash;
+                    save(lastMovieId, d);
+                    L('FV time=' + Math.round(best.time) + ' hash=' + String(best.hash).slice(0,10));
+                }
             }
             lastFvSnapshot = store;
         } catch(e) {}
     }, 2000);
 
-    // === 4. Перехват Timeline.view ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v35) {
+    // === 4. Перехват Timeline.view (принудительная перемотка) ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v36) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -125,7 +132,7 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v35 = true;
+        Lampa.Timeline.__hooked_v36 = true;
         L('HOOKED Timeline.view');
     }
 
@@ -159,7 +166,9 @@
 
         $('.button--continue-series').on('hover:enter', function () {
             const d = get(movie.id);
-            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no') + ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0));
+            L('BTN id=' + movie.id + ' time=' + (d ? Math.round(d.__time||0) : 'no') +
+              ' playlist=' + (d && d.__playlist ? d.__playlist.length : 0) +
+              ' hash=' + (d && d.__timelineHash ? String(d.__timelineHash).slice(0,10) : 'none'));
             if (!d || !d.url) return;
 
             const resumeTime = d.__time || 0;
@@ -175,37 +184,40 @@
                 }, 20000);
             }
 
-            // Собираем аргумент для play()
+            // Базовый аргумент
             const playArg = {};
             for (const k in d) { if (k.indexOf('__') === 0) continue; playArg[k] = d[k]; }
             playArg.card = movie;
             playArg.movie = movie;
 
-            // КЛЮЧЕВОЕ: передаём плейлист ВНУТРИ playArg
+            // Плейлист внутри аргумента (для переключения серий)
             if (d.__playlist && d.__playlist.length > 0) {
                 const idx = findPlaylistIndex(d.__playlist, d);
                 const startIdx = idx >= 0 ? idx : 0;
-                // Помечаем selected
                 for (let i = 0; i < d.__playlist.length; i++) {
                     d.__playlist[i].selected = (i === startIdx);
                 }
-                // Устанавливаем активный элемент как основной
                 Object.assign(playArg, d.__playlist[startIdx]);
                 playArg.card = movie;
                 playArg.movie = movie;
-                // ПЛЕЙЛИСТ ЦЕЛИКОМ
                 playArg.playlist = d.__playlist;
                 L('BTN with playlist items=' + d.__playlist.length + ' startIdx=' + startIdx);
-            } else {
-                L('BTN no playlist, single');
+            }
+
+            // КЛЮЧЕВОЕ ДЛЯ ВНЕШНЕГО ПЛЕЕРА (Vimu и др.):
+            // Передаём timeline, чтобы Lampa вызвала Timeline.view и подставила время,
+            // а затем отправила startfrom в нативный Android-мост.
+            if (resumeTime > 1) {
+                playArg.timeline = { hash: d.__timelineHash || '0' };
+                L('BTN timeline set hash=' + (d.__timelineHash ? String(d.__timelineHash).slice(0,10) : '0'));
             }
 
             Lampa.Player.play(playArg);
 
-            // Резервная перемотка
+            // Резервная перемотка (для встроенного плеера, если override не сработал)
             if (resumeTime > 1) {
                 setTimeout(function () {
-                    if (overrideUsed) { L('skip PV.to'); return; }
+                    if (overrideUsed) { L('skip PV.to (override worked)'); return; }
                     try {
                         if (Lampa.PlayerVideo && typeof Lampa.PlayerVideo.to === 'function') {
                             L('PV.to(' + Math.round(resumeTime) + ') fallback');
@@ -217,5 +229,5 @@
         });
     });
 
-    L('v35 loaded');
+    L('v36 loaded');
 })();
