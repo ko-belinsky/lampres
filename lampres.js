@@ -42,7 +42,19 @@
         return 'file_view';
     }
 
-    // 1. Перехват Player.play (сохранение контекста)
+    // Получаем index текущей играющей серии из URL видео
+    function getPlayingIndex() {
+        try {
+            let v = null;
+            try { v = Lampa.PlayerVideo.video(); } catch(e) {}
+            if (!v) v = document.querySelector('video');
+            if (!v || !v.src) return null;
+            const m = String(v.src).match(/[?&]index=(\d+)/i);
+            return m ? parseInt(m[1]) : null;
+        } catch(e) { return null; }
+    }
+
+    // 1. Перехват Player.play — сохраняем контекст и сбрасываем время при смене серии
     if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_cs) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
@@ -51,6 +63,7 @@
                     const movie = arg.card || arg.movie || currentMovie();
                     if (movie && movie.id && isSeries(movie)) {
                         lastMovieId = movie.id;
+                        const ex = get(movie.id) || {};
                         const prim = {};
                         for (const k in arg) {
                             const v = arg[k];
@@ -58,11 +71,24 @@
                                 prim[k] = v;
                             }
                         }
-                        const ex = get(movie.id) || {};
-                        prim.__time = ex.__time || 0;
-                        prim.__duration = ex.__duration || 0;
-                        prim.__timelineHash = ex.__timelineHash || null;
                         prim.__playlist = ex.__playlist || null;
+                        prim.__episodes = ex.__episodes || {};
+                        
+                        const newIndex = arg.id !== undefined ? arg.id : ex.__lastIndex;
+                        const isNewEpisode = ex.__lastIndex !== undefined && ex.__lastIndex !== null && newIndex !== ex.__lastIndex;
+                        
+                        prim.__lastIndex = newIndex;
+                        if (isNewEpisode) {
+                            // Переключились на другую серию — сбрасываем "последнее время"
+                            prim.__lastTime = 0;
+                            prim.__lastHash = null;
+                            prim.__lastDuration = 0;
+                        } else {
+                            prim.__lastTime = ex.__lastTime || 0;
+                            prim.__lastHash = ex.__lastHash || null;
+                            prim.__lastDuration = ex.__lastDuration || 0;
+                        }
+                        
                         save(movie.id, prim);
                         try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
                     }
@@ -73,7 +99,7 @@
         Lampa.Player.__hooked_cs = true;
     }
 
-    // 2. Перехват Player.playlist (сохранение очереди серий)
+    // 2. Перехват Player.playlist — сохраняем очередь серий
     if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_cs_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
@@ -101,12 +127,16 @@
         Lampa.Player.__hooked_cs_pl = true;
     }
 
-    // 3. Опрос file_view (отслеживание прогресса в реальном времени)
+    // 3. Отслеживание прогресса — привязываем время к текущей серии
     setInterval(function () {
         if (!lastMovieId) return;
         try {
             const store = JSON.parse(localStorage.getItem(getFvKey()) || '{}');
-            let best = null;
+            const d = get(lastMovieId);
+            if (!d) { lastFvSnapshot = store; return; }
+            
+            const curIdx = getPlayingIndex();
+            
             for (const hash in store) {
                 const v = store[hash];
                 if (!v || !v.time) continue;
@@ -114,25 +144,49 @@
                 const prevTime = prev ? (prev.time || 0) : -1;
                 
                 if (Math.abs(prevTime - v.time) > 1) {
-                    if (!best || v.time > (best.time || 0)) {
-                        best = { hash: hash, time: v.time, duration: v.duration };
+                    if (!d.__episodes) d.__episodes = {};
+                    const idx = curIdx !== null ? curIdx : d.__lastIndex;
+                    if (idx !== null && idx !== undefined) {
+                        d.__episodes[idx] = { time: v.time, duration: v.duration, hash: hash };
+                        d.__lastIndex = idx;
+                        d.__lastTime = v.time;
+                        d.__lastHash = hash;
+                        d.__lastDuration = v.duration;
+                        save(lastMovieId, d);
                     }
-                }
-            }
-            if (best) {
-                const d = get(lastMovieId);
-                if (d) {
-                    d.__time = best.time;
-                    d.__duration = best.duration || d.__duration || 0;
-                    d.__timelineHash = best.hash;
-                    save(lastMovieId, d);
                 }
             }
             lastFvSnapshot = store;
         } catch(e) {}
     }, 2000);
 
-    // 4. Перехват Timeline.view (для встроенного плеера)
+    // 4. Отслеживание смены серии через video.src (для автоперехода внутри плеера)
+    setInterval(function () {
+        if (!lastMovieId) return;
+        const curIdx = getPlayingIndex();
+        if (curIdx === null) return;
+        const d = get(lastMovieId);
+        if (!d) return;
+        if (d.__lastIndex === curIdx) return;
+        d.__lastIndex = curIdx;
+        // Обновляем метаданные серии из плейлиста
+        if (d.__playlist) {
+            for (let i = 0; i < d.__playlist.length; i++) {
+                const it = d.__playlist[i];
+                if (it.id === curIdx || it.file_index === curIdx || it.index === curIdx) {
+                    if (it.path) d.path = it.path;
+                    if (it.url) d.url = it.url;
+                    if (it.season !== undefined) d.season = it.season;
+                    if (it.episode !== undefined) d.episode = it.episode;
+                    if (it.id !== undefined) d.id = it.id;
+                    break;
+                }
+            }
+        }
+        save(lastMovieId, d);
+    }, 1000);
+
+    // 5. Перехват Timeline.view для встроенного плеера
     if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_cs) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
@@ -151,23 +205,55 @@
         Lampa.Timeline.__hooked_cs = true;
     }
 
-    // 5. Вспомогательная функция поиска серии в плейлисте
+    // 6. Поиск серии в плейлисте
     function findPlaylistIndex(playlist, d) {
         if (!playlist || !d) return -1;
+        // Приоритет: сохранённый __lastIndex (последняя просмотренная серия)
+        if (d.__lastIndex !== undefined && d.__lastIndex !== null) {
+            for (let i = 0; i < playlist.length; i++) {
+                const it = playlist[i];
+                if (!it) continue;
+                if (it.id === d.__lastIndex || it.file_index === d.__lastIndex || it.index === d.__lastIndex) return i;
+            }
+        }
+        // Fallback
         for (let i = 0; i < playlist.length; i++) {
             const it = playlist[i];
             if (!it) continue;
             if (d.path && it.path && d.path === it.path) return i;
             if (d.url && it.url && d.url === it.url) return i;
-            if (d.season !== undefined && d.episode !== undefined && it.season === d.season && it.episode === d.episode) return i;
-            if (d.id !== undefined && d.id !== null) {
-                if (it.id === d.id || it.file_index === d.id || it.index === d.id) return i;
-            }
         }
         return -1;
     }
 
-    // 6. Отрисовка кнопки в карточке
+    // 7. Вычисление данных для продолжения
+    function computeResumeData(d) {
+        if (!d) return null;
+        // Приоритет: прогресс конкретной серии
+        if (d.__episodes && d.__lastIndex !== null && d.__lastIndex !== undefined) {
+            const ep = d.__episodes[d.__lastIndex];
+            if (ep && ep.time > 1) {
+                return { 
+                    index: d.__lastIndex, 
+                    time: ep.time, 
+                    hash: ep.hash || '0', 
+                    duration: ep.duration || 0 
+                };
+            }
+        }
+        // Fallback: последнее известное время
+        if (d.__lastTime > 1) {
+            return { 
+                index: d.__lastIndex, 
+                time: d.__lastTime, 
+                hash: d.__lastHash || '0', 
+                duration: d.__lastDuration || 0 
+            };
+        }
+        return null;
+    }
+
+    // 8. Отрисовка кнопки
     Lampa.Listener.follow('full', function (e) {
         if (e.type !== 'complite' || !e.data || !e.data.movie) return;
         
@@ -177,9 +263,10 @@
         $('.button--continue-series').remove();
 
         const d = get(movie.id);
+        const resume = computeResumeData(d);
         
-        // Показываем кнопку ТОЛЬКО если есть сохраненный прогресс
-        if (!d || !d.__time || d.__time < 1) return;
+        // Показываем кнопку только если есть сохранённый прогресс
+        if (!resume) return;
 
         $('.full-start-new__buttons').append(
             '<div class="full-start__button selector button--continue-series">' +
@@ -188,9 +275,7 @@
         );
 
         $('.button--continue-series').on('hover:enter', function () {
-            const resumeTime = d.__time || 0;
-            
-            pendingResume = { movieId: movie.id, time: resumeTime, duration: d.__duration };
+            pendingResume = { movieId: movie.id, time: resume.time, duration: resume.duration };
             setTimeout(function () {
                 if (pendingResume && pendingResume.movieId === movie.id) {
                     pendingResume = null;
@@ -205,7 +290,7 @@
             playArg.card = movie;
             playArg.movie = movie;
 
-            // Восстановление плейлиста
+            // Восстанавливаем плейлист и выбираем правильную серию
             if (d.__playlist && d.__playlist.length > 0) {
                 const idx = findPlaylistIndex(d.__playlist, d);
                 const startIdx = idx >= 0 ? idx : 0;
@@ -220,11 +305,10 @@
                 playArg.playlist = d.__playlist;
             }
 
-            // Передача времени
             playArg.timeline = { 
-                hash: d.__timelineHash || '0', 
-                time: resumeTime, 
-                duration: d.__duration || 0 
+                hash: resume.hash, 
+                time: resume.time, 
+                duration: resume.duration 
             };
 
             Lampa.Player.play(playArg);
@@ -237,8 +321,8 @@
                 if (!v) { try { v = document.querySelector('video'); } catch(e) {} }
                 
                 if (v && v.readyState >= 1 && v.duration > 0) {
-                    if (Math.abs(v.currentTime - resumeTime) > 3) {
-                        v.currentTime = resumeTime;
+                    if (Math.abs(v.currentTime - resume.time) > 3) {
+                        v.currentTime = resume.time;
                     }
                     clearInterval(timer);
                 } else if (++tries > 40) {
