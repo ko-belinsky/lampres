@@ -1,14 +1,14 @@
 (function () {
     'use strict';
-    if (window.cs_v41) return;
-    window.cs_v41 = true;
+    if (window.cs_v42) return;
+    window.cs_v42 = true;
 
-    const KEY = 'cs_v41_store';
+    const KEY = 'cs_v42_store';
     let lastMovieId = null;
     let pendingResume = null;
     let lastFvSnapshot = {};
 
-    function L(m) { console.log('CS41', m); }
+    function L(m) { console.log('CS42', m); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) {}
@@ -27,8 +27,8 @@
         return 'file_view';
     }
 
-    // === 1. Перехват Player.play (сохранение данных) ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v41) {
+    // === 1. Перехват Player.play ===
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v42) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -48,18 +48,18 @@
                         prim.__playlist = ex.__playlist || null;
                         save(movie.id, prim);
                         try { lastFvSnapshot = JSON.parse(localStorage.getItem(getFvKey()) || '{}'); } catch(e) { lastFvSnapshot = {}; }
-                        L('PLAY id=' + movie.id + ' fileIdx=' + (arg.id !== undefined ? arg.id : 'na') + ' season=' + arg.season + ' episode=' + arg.episode);
+                        L('PLAY id=' + movie.id + ' fileIdx=' + (arg.id !== undefined ? arg.id : 'na'));
                     }
                 }
             } catch(e) { L('play hook err ' + e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v41 = true;
+        Lampa.Player.__hooked_v42 = true;
         L('HOOKED Player.play');
     }
 
-    // === 2. Перехват Player.playlist (сохранение плейлиста) ===
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v41_pl) {
+    // === 2. Перехват Player.playlist ===
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v42_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
@@ -84,11 +84,11 @@
             }
             return result;
         };
-        Lampa.Player.__hooked_v41_pl = true;
+        Lampa.Player.__hooked_v42_pl = true;
         L('HOOKED Player.playlist');
     }
 
-    // === 3. Опрос file_view (сохранение прогресса) ===
+    // === 3. Опрос file_view ===
     setInterval(function () {
         if (!lastMovieId) return;
         try {
@@ -117,8 +117,8 @@
         } catch(e) {}
     }, 2000);
 
-    // === 4. Перехват Timeline.view (встроенный плеер) ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v41) {
+    // === 4. Перехват Timeline.view ===
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v42) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -129,45 +129,68 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v41 = true;
+        Lampa.Timeline.__hooked_v42 = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 5. ПЕРЕХВАТ RUNAS (подмена данных ДО отправки в Vimu) ===
-    if (Lampa.Player && typeof Lampa.Player.runas === 'function' && !Lampa.Player.__hooked_v41_runas) {
-        const origRunas = Lampa.Player.runas;
-        Lampa.Player.runas = function (data, player) {
+    // === 5. ПЕРЕХВАТ ANDROIDJS.OPENPLAYER ЧЕРЕЗ PROXY ===
+    let androidHooked = false;
+    function hookAndroidProxy() {
+        if (window.AndroidJS && !androidHooked) {
             try {
-                if (data && pendingResume && pendingResume.time > 1) {
-                    // Vimu ожидает startfrom в миллисекундах
-                    data.startfrom = Math.round(pendingResume.time * 1000);
-                    data.position = Math.round(pendingResume.time * 1000);
-                    if (data.timeline) {
-                        data.timeline.time = pendingResume.time;
-                        data.timeline.duration = pendingResume.duration || 0;
+                const orig = window.AndroidJS;
+                window.AndroidJS = new Proxy(orig, {
+                    get(target, prop) {
+                        if (prop === 'openPlayer') {
+                            return function(link, dataJson) {
+                                try {
+                                    let data = JSON.parse(dataJson);
+                                    L('NATIVE PROXY link=' + String(link).slice(0, 100));
+                                    let startSec = 0;
+                                    if (pendingResume && pendingResume.time > 1) {
+                                        startSec = pendingResume.time;
+                                        L('NATIVE startfrom from pendingResume=' + Math.round(startSec));
+                                    } else if (data.timeline && data.timeline.time > 1) {
+                                        startSec = data.timeline.time;
+                                        L('NATIVE startfrom from timeline.time=' + Math.round(startSec));
+                                    } else if (data.position && data.position > 1) {
+                                        startSec = data.position;
+                                        L('NATIVE startfrom from position=' + Math.round(startSec));
+                                    }
+                                    if (startSec > 1) {
+                                        const ms = Math.round(startSec * 1000);
+                                        data.startfrom = ms;
+                                        data.position = ms;
+                                        L('NATIVE FORCED startfrom=' + ms + 'ms');
+                                    }
+                                    dataJson = JSON.stringify(data);
+                                } catch(e) { L('native proxy err ' + e.message); }
+                                return target.openPlayer(link, dataJson);
+                            };
+                        }
+                        const val = target[prop];
+                        return typeof val === 'function' ? val.bind(target) : val;
                     }
-                    L('RUNAS INJECTED startfrom=' + data.startfrom);
-                }
-            } catch(e) { L('runas hook err ' + e.message); }
-            return origRunas.apply(this, arguments);
-        };
-        Lampa.Player.__hooked_v41_runas = true;
-        L('HOOKED Player.runas');
+                });
+                androidHooked = true;
+                L('HOOKED AndroidJS via Proxy');
+            } catch(e) {
+                L('Proxy failed: ' + e.message);
+            }
+        }
+        if (!androidHooked) setTimeout(hookAndroidProxy, 500);
     }
+    hookAndroidProxy();
 
-    // === 6. Поиск индекса серии в плейлисте (надежный) ===
+    // === 6. Поиск индекса серии ===
     function findPlaylistIndex(playlist, d) {
         if (!playlist || !d) return -1;
         for (let i = 0; i < playlist.length; i++) {
             const it = playlist[i];
             if (!it) continue;
-            // По пути файла
             if (d.path && it.path && d.path === it.path) return i;
-            // По URL
             if (d.url && it.url && d.url === it.url) return i;
-            // По сезону и эпизоду (самый надежный для сериалов)
             if (d.season !== undefined && d.episode !== undefined && it.season === d.season && it.episode === d.episode) return i;
-            // По индексу
             if (d.id !== undefined && d.id !== null) {
                 if (it.id === d.id || it.file_index === d.id || it.index === d.id) return i;
             }
@@ -220,11 +243,12 @@
                 playArg.card = movie;
                 playArg.movie = movie;
                 playArg.playlist = d.__playlist;
-                L('BTN playlist startIdx=' + startIdx + ' (idx=' + idx + ') d.season=' + d.season + ' d.episode=' + d.episode);
+                L('BTN playlist startIdx=' + startIdx + ' (idx=' + idx + ')');
             }
 
             if (resumeTime > 1) {
                 playArg.timeline = { hash: d.__timelineHash || '0', time: resumeTime, duration: d.__duration || 0 };
+                playArg.startfrom = Math.round(resumeTime * 1000);
             }
 
             Lampa.Player.play(playArg);
@@ -251,5 +275,5 @@
         });
     });
 
-    L('v41 loaded');
+    L('v42 loaded');
 })();
