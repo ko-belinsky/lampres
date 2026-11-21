@@ -1,14 +1,14 @@
 (function () {
     'use strict';
-    if (window.cs_v43) return;
-    window.cs_v43 = true;
+    if (window.cs_v44) return;
+    window.cs_v44 = true;
 
-    const KEY = 'cs_v43_store';
+    const KEY = 'cs_v44_store';
     let lastMovieId = null;
     let pendingResume = null;
     let lastFvSnapshot = {};
 
-    function L(m) { console.log('CS43', m); }
+    function L(m) { console.log('CS44', m); }
 
     function save(id, data) {
         try { const a = JSON.parse(localStorage.getItem(KEY)||'{}'); a[String(id)]=data; localStorage.setItem(KEY, JSON.stringify(a)); } catch(e) {}
@@ -28,7 +28,7 @@
     }
 
     // === 1. Перехват Player.play ===
-    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v43) {
+    if (Lampa.Player && typeof Lampa.Player.play === 'function' && !Lampa.Player.__hooked_v44) {
         const orig = Lampa.Player.play;
         Lampa.Player.play = function (arg) {
             try {
@@ -54,12 +54,12 @@
             } catch(e) { L('play hook err ' + e.message); }
             return orig.apply(this, arguments);
         };
-        Lampa.Player.__hooked_v43 = true;
+        Lampa.Player.__hooked_v44 = true;
         L('HOOKED Player.play');
     }
 
     // === 2. Перехват Player.playlist ===
-    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v43_pl) {
+    if (Lampa.Player && typeof Lampa.Player.playlist === 'function' && !Lampa.Player.__hooked_v44_pl) {
         const origPl = Lampa.Player.playlist;
         Lampa.Player.playlist = function () {
             const args = [].slice.call(arguments);
@@ -84,7 +84,7 @@
             }
             return result;
         };
-        Lampa.Player.__hooked_v43_pl = true;
+        Lampa.Player.__hooked_v44_pl = true;
         L('HOOKED Player.playlist');
     }
 
@@ -118,7 +118,7 @@
     }, 2000);
 
     // === 4. Перехват Timeline.view ===
-    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v43) {
+    if (Lampa.Timeline && typeof Lampa.Timeline.view === 'function' && !Lampa.Timeline.__hooked_v44) {
         const origView = Lampa.Timeline.view;
         Lampa.Timeline.view = function (hash) {
             let result;
@@ -129,63 +129,52 @@
             }
             return result;
         };
-        Lampa.Timeline.__hooked_v43 = true;
+        Lampa.Timeline.__hooked_v44 = true;
         L('HOOKED Timeline.view');
     }
 
-    // === 5. ПРОКСИРОВАНИЕ ANDROIDJS + FORCERESUME ===
-    let androidHooked = false;
-    function hookAndroidProxy() {
-        if (window.AndroidJS && !androidHooked) {
-            try {
-                const orig = window.AndroidJS;
-                window.AndroidJS = new Proxy(orig, {
-                    get(target, prop) {
-                        if (prop === 'openPlayer') {
-                            return function(link, dataJson) {
-                                try {
-                                    let data = JSON.parse(dataJson);
-                                    L('NATIVE PROXY link=' + String(link).slice(0, 100));
-
-                                    let startSec = 0;
-                                    if (pendingResume && pendingResume.time > 1) {
-                                        startSec = pendingResume.time;
-                                    } else if (data.timeline && data.timeline.time > 1) {
-                                        startSec = data.timeline.time;
-                                    } else if (data.position && data.position > 1) {
-                                        startSec = data.position;
-                                    }
-
-                                    if (startSec > 1) {
-                                        const ms = Math.round(startSec * 1000);
-                                        // Для Vimu и MPV
-                                        data.startfrom = ms;
-                                        data.position = ms;
-                                        // КЛЮЧЕВОЙ ФЛАГ ДЛЯ VIMU
-                                        data.forceresume = true;
-                                        if (data.timeline) {
-                                            data.timeline.time = startSec;
-                                        }
-                                        L('NATIVE FORCED startfrom=' + ms + 'ms, forceresume=true');
-                                    }
-                                    dataJson = JSON.stringify(data);
-                                } catch(e) { L('native proxy err ' + e.message); }
-                                return target.openPlayer(link, dataJson);
-                            };
-                        }
-                        const val = target[prop];
-                        return typeof val === 'function' ? val.bind(target) : val;
-                    }
-                });
-                androidHooked = true;
-                L('HOOKED AndroidJS via Proxy');
-            } catch(e) {
-                L('Proxy failed: ' + e.message);
-            }
+    // === 5. ПЕРЕХВАТ ВСЕХ ВОЗМОЖНЫХ МОСТОВ (AndroidJS и Android) ===
+    let bridged = false;
+    function forceStartFrom(data) {
+        if (!pendingResume || pendingResume.time <= 1) return data;
+        const ms = Math.round(pendingResume.time * 1000);
+        data.startfrom = ms;
+        data.position = ms;
+        data.forceresume = true;
+        if (data.timeline) {
+            data.timeline.time = pendingResume.time;
+            data.timeline.duration = pendingResume.duration || 0;
         }
-        if (!androidHooked) setTimeout(hookAndroidProxy, 500);
+        L('FORCED startfrom=' + ms + 'ms, position=' + ms + 'ms, forceresume=true');
+        return data;
     }
-    hookAndroidProxy();
+
+    function hookBridge(obj, name) {
+        if (!obj || typeof obj.openPlayer !== 'function' || obj.__hooked_v44) return false;
+        const orig = obj.openPlayer;
+        obj.openPlayer = function (link, dataJson) {
+            try {
+                let data = JSON.parse(dataJson);
+                L(name + '.openPlayer link=' + String(link).slice(0, 100));
+                data = forceStartFrom(data);
+                dataJson = JSON.stringify(data);
+            } catch(e) { L(name + ' hook err ' + e.message); }
+            return orig.call(this, link, dataJson);
+        };
+        obj.__hooked_v44 = true;
+        L('HOOKED ' + name + '.openPlayer');
+        return true;
+    }
+
+    function tryHookBridges() {
+        if (bridged) return;
+        let ok = false;
+        if (window.AndroidJS) ok = hookBridge(window.AndroidJS, 'AndroidJS') || ok;
+        if (window.Android)  ok = hookBridge(window.Android,  'Android')  || ok;
+        if (ok) { bridged = true; L('BRIDGES HOOKED'); }
+        else setTimeout(tryHookBridges, 500);
+    }
+    tryHookBridges();
 
     // === 6. Поиск индекса серии ===
     function findPlaylistIndex(playlist, d) {
@@ -254,6 +243,7 @@
             if (resumeTime > 1) {
                 playArg.timeline = { hash: d.__timelineHash || '0', time: resumeTime, duration: d.__duration || 0 };
                 playArg.startfrom = Math.round(resumeTime * 1000);
+                playArg.position = Math.round(resumeTime * 1000);
                 playArg.forceresume = true;
             }
 
@@ -281,5 +271,5 @@
         });
     });
 
-    L('v43 loaded');
+    L('v44 loaded');
 })();
